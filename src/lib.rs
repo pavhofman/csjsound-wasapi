@@ -1,26 +1,76 @@
 #![allow(non_snake_case)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+extern crate core;
+
+use core::slice;
+use std::error::Error;
+use std::fs::File;
+use std::io;
 
 use ::function_name::named;
 use jni::JNIEnv;
-use jni::objects::{JClass, JObject, JString, JValue};
+use jni::objects::{AutoPrimitiveArray, JClass, JObject, JString, JValue, ReleaseMode};
 use jni::signature::TypeSignature;
-use jni::sys::{jboolean, jbyteArray, jint, jlong, jobject, jstring};
-use log::{error, info, trace, warn};
+use jni::sys::{jboolean, jbyteArray, jint, jlong, jobject};
+use log::{debug, error, info, LevelFilter, trace};
+use simplelog::{CombinedLogger, ConfigBuilder, format_description, WriteLogger};
+use wasapi::Direction;
 
-struct MixerDesc {
-    // used when walking descs to find a desc with required idx
-    down_counter: usize,
+use wasapi_impl::*;
+
+mod wasapi_impl;
+
+pub type Res<T> = Result<T, Box<dyn Error>>;
+
+pub struct MixerDesc {
     deviceID: String,
     max_lines: usize,
     name: String,
     description: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct Format {
+    validbits: i32,
+    frame_bytes: i32,
+    channels: i32,
+    rate: i32,
+    is_signed: bool,
+    is_big_endian: bool,
+}
 
 const ADD_FORMAT_METHOD: &'static str = "addFormat";
 const ADD_FORMAT_SIGNATURE: &'static str = "(Ljava/util/Vector;IIIIIZZ)V";
+
+
+#[named]
+#[no_mangle]
+pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
+(_env: JNIEnv, _clazz: JClass) -> jboolean {
+    let level = LevelFilter::Debug;
+    let format = format_description!("[hour]:[minute]:[second].[subsecond]");
+    let config = ConfigBuilder::new()
+        .set_time_format_custom(format)
+        .build();
+    let _ = CombinedLogger::init(vec![
+        //SimpleLogger::new(level, config.clone()),
+        WriteLogger::new(level, config, File::create("csjsound-dll.log").unwrap()),
+        //WriteLogger::new(level, config, io::stderr()),
+    ]);
+
+    trace!("{}", function_name!());
+    return match do_initialize_wasapi() {
+        Ok(_) => {
+            info!("Lib initialized");
+            1 as jboolean
+        }
+        Err(err) => {
+            error!("{}: WASAPI init failed: {}", function_name!(), err);
+            0 as jboolean
+        }
+    };
+}
+
 
 /*
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
@@ -29,44 +79,40 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
-(env: JNIEnv, clazz: JClass, deviceID: JString, isSource: jboolean, formats: JObject) {
-    let parsed = TypeSignature::from_str(&ADD_FORMAT_SIGNATURE).unwrap();
+(env: JNIEnv, clazz: JClass, deviceID: JString, isSource: jboolean, formatsVec: JObject) {
+    let deviceIDStr = get_string(env, deviceID);
 
-    /*
-        private static void addFormat(Vector<AudioFormat> v, int bits, int frameBytes, int channels,
-                                      int rate, int encoding, boolean isSigned, boolean isBigEndian)
-     */
-    match env.call_static_method_unchecked(clazz, (clazz, ADD_FORMAT_METHOD, ADD_FORMAT_SIGNATURE), parsed.ret.clone(), &[
-        JValue::from(formats),
-        JValue::Int(16),
-        JValue::Int(2),
-        JValue::Int(2),
-        JValue::Int(-1),    // unspecified rate
-        JValue::Int(0), // PCM
-        JValue::from(true), // S
-        JValue::from(false), // LE
-    ]) {
-        Ok(_) => {}
+    let formats = match do_get_formats(deviceIDStr, get_direction(isSource)) {
+        Ok(formats) => formats,
         Err(err) => {
-            error!("{}: Calling method addFormat failed: {:?}\n", function_name!(), err);
+            error!("{}: get_fmts failed: {:?}\n", function_name!(), err);
             return;
         }
-    }
-
-    match env.call_static_method_unchecked(clazz, (clazz, ADD_FORMAT_METHOD, ADD_FORMAT_SIGNATURE), parsed.ret, &[
-        JValue::from(formats),
-        JValue::Int(24),
-        JValue::Int(2),
-        JValue::Int(2),
-        JValue::Int(-1),    // unspecified rate
-        JValue::Int(0), // PCM
-        JValue::from(true),
-        JValue::from(false), //LE
-    ]) {
-        Ok(_) => {}
-        Err(err) => {
-            error!("{}: Calling method addFormat failed: {:?}\n", function_name!(), err);
-            return;
+    };
+    let signature = TypeSignature::from_str(&ADD_FORMAT_SIGNATURE).unwrap();
+    for format in formats {
+        /*
+            private static void addFormat(Vector<AudioFormat> v, int bits, int frameBytes, int channels,
+                                          int rate, int encoding, boolean isSigned, boolean isBigEndian)
+         */
+        match env.call_static_method_unchecked(clazz,
+                                               (clazz, ADD_FORMAT_METHOD, ADD_FORMAT_SIGNATURE),
+                                               signature.ret.clone(),
+                                               &[
+                                                   JValue::from(formatsVec),
+                                                   JValue::Int(format.validbits),
+                                                   JValue::Int(format.frame_bytes),
+                                                   JValue::Int(format.channels),
+                                                   JValue::Int(format.rate),
+                                                   JValue::Int(0), // fixed PCM
+                                                   JValue::from(format.is_signed),
+                                                   JValue::from(format.is_big_endian),
+                                               ]) {
+            Ok(_) => {}
+            Err(err) => {
+                error!("{}: Calling method addFormat failed: {:?}\n", function_name!(), err);
+                return;
+            }
         }
     }
 }
@@ -78,12 +124,25 @@ JNIEXPORT jlong JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nOpen
 	jint enc, jint rate, jint sampleSignBits, jint frameBytes, jint channels,
 	jboolean isSigned, jboolean isBigEndian, jint bufferBytes)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
-(env: JNIEnv, clazz: JClass, deviceID: JString, isSource: jboolean,
- enc: jint, rate: jint, sampleSignBits: jint, frameBytes: jint, channels: jint,
- isSigned: jboolean, isBigEndian: jboolean, bufferBytes: jint) -> jlong {
-    -1
+(env: JNIEnv, _clazz: JClass, deviceID: JString, isSource: jboolean,
+ _enc: jint, rate: jint, sampleSignBits: jint, frameBytes: jint, channels: jint,
+ _isSigned: jboolean, _isBigEndian: jboolean, bufferBytes: jint) -> jlong {
+    let deviceIDStr = get_string(env, deviceID);
+    let rtd: RuntimeData = match do_open_dev(deviceIDStr, get_direction(isSource), rate as usize,
+                                             sampleSignBits as usize, frameBytes as usize,
+                                             channels as usize, bufferBytes as usize) {
+        Ok(rtd) => rtd,
+        Err(err) => {
+            error!("{}: open_dev failed: {:?}\n", function_name!(), err);
+            // SimpleDataLine.doOpen checks for 0 (= NULL)
+            return 0;
+        }
+    };
+    // getting the pointer
+    get_rtd_box_ptr(rtd)
 }
 
 
@@ -91,10 +150,18 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStart
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStart
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
-    -1
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    match do_start(rtd, get_direction(isSource)) {
+        Ok(_) => {}
+        Err(err) => {
+            error!("{}: start failed: {:?}\n", function_name!(), err);
+        }
+    }
 }
 
 
@@ -102,10 +169,18 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStart
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStop
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStop
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
-    -1
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    match do_stop(rtd, get_direction(isSource)) {
+        Ok(_) => {}
+        Err(err) => {
+            error!("{}: stop failed: {:?}\n", function_name!(), err);
+        }
+    }
 }
 
 
@@ -113,10 +188,22 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStop
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nClose
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
-    -1
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
+    trace!("{}", function_name!());
+
+    // need to release the allocated memory => getting the box
+    let rtd = get_rtd_box(nativePtr);
+    match do_close(&rtd, get_direction(isSource)) {
+        Ok(_) => {}
+        Err(err) => {
+            error!("{}: closing failed: {:?}\n", function_name!(), err);
+        }
+    }
+    // freeing rtd from heap
+    drop(rtd);
 }
 
 
@@ -124,10 +211,24 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nWrite
 	(JNIEnv *env, jclass clazz, jlong nativePtr, jbyteArray jData, jint offset, jint len)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nWrite
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, jData: jbyteArray, offset: jint, len: jint) -> jint {
-    -1
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, jData: jbyteArray, offset: jint, len: jint) -> jint {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    // warn - AutoPrimitiveArray disables GC in java until the array is dropped in rust
+    let jarr: AutoPrimitiveArray = env.get_primitive_array_critical(jData, ReleaseMode::NoCopyBack).unwrap();
+    let size = jarr.size().unwrap() as usize;
+    let items: &[u8] = unsafe { slice::from_raw_parts(jarr.as_ptr() as *const u8, size) };
+    let cnt = match do_write(rtd, items, offset as usize, len as usize) {
+        Ok(cnt) => cnt,
+        Err(e) => {
+            error!("{}: Writing failed: {:?}", function_name!(), e);
+            return -1 as jint;
+        }
+    };
+    cnt as jint
 }
 
 
@@ -135,32 +236,62 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nWrite
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nRead
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jbyteArray jData, jint offset, jint len)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nRead
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, jData: jbyteArray, offset: jint, len: jint) -> jint {
-    -1
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, jData: jbyteArray, offset: jint, len: jint) -> jint {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    let jarr: AutoPrimitiveArray = env.get_primitive_array_critical(jData, ReleaseMode::CopyBack).unwrap();
+    let size = jarr.size().unwrap() as usize;
+    let items: &mut [u8] = unsafe { slice::from_raw_parts_mut(jarr.as_ptr() as *mut u8, size) };
+    let cnt = match do_read(rtd, items, offset as usize, len as usize) {
+        Ok(cnt) => cnt,
+        Err(e) => {
+            error!("{}: Reading failed: {:?}", function_name!(), e);
+            return -1 as jint;
+        }
+    };
+    cnt as jint
 }
 
 
 /*
-JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferSize
+JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferBytes
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
+#[named]
 #[no_mangle]
-pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferSize
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
-    -1
+pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferBytes
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
+    let dir = get_direction(isSource);
+    let dir_cloned = dir.clone();
+    let dirstr = dir_str(&dir_cloned);
+    trace!("{} {}", function_name!(), dirstr);
+    let rtd = get_rtd(nativePtr);
+    let bytes = match do_get_buffer_bytes(rtd, dir) {
+        Ok(size) => size,
+        Err(e) => {
+            error!("{}: Getting buffer_bytes failed: {:?}", function_name!(), e);
+            return 0 as jint;
+        }
+    };
+    trace!("{} {}: returning {}", function_name!(), dirstr, bytes);
+    bytes as jint
 }
 
 
 /*
-JNIEXPORT jboolean JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nDrain
+JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nDrain
 	(JNIEnv* env, jclass clazz, jlong nativePtr)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nDrain
-(env: JNIEnv, clazz: JClass, nativePtr: jlong) -> jboolean {
-    0
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong) {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    do_drain(rtd);
 }
 
 
@@ -168,19 +299,39 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nDrain
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nFlush
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nFlush
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean) {}
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, _isSource: jboolean) {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    do_flush(rtd);
+}
 
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBytes
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBytes
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
-    -1
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
+    let dir = get_direction(isSource);
+    let dir_cloned = dir.clone();
+    let dirstr = dir_str(&dir_cloned);
+    trace!("{} {}", function_name!(), dirstr);
+
+    let rtd = get_rtd(nativePtr);
+    let bytes = match do_get_avail_bytes(rtd, dir) {
+        Ok(size) => size,
+        Err(e) => {
+            error!("{}: Getting avail_bytes failed: {:?}", function_name!(), e);
+            return 0 as jint;
+        }
+    };
+    trace!("{} {}: returning {}", function_name!(), dirstr, bytes);
+    bytes as jint
 }
 
 
@@ -188,21 +339,42 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBy
 JNIEXPORT jlong JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
 	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource, jlong javaBytePos)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
-(env: JNIEnv, clazz: JClass, nativePtr: jlong, isSource: jboolean, javaBytePos: jlong) -> jlong {
-    -1
+(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean, javaBytePos: jlong) -> jlong {
+    trace!("{}", function_name!());
+    let rtd = get_rtd(nativePtr);
+    let bytes = match do_get_byte_pos(rtd, get_direction(isSource), javaBytePos as u64) {
+        Ok(size) => size,
+        Err(e) => {
+            error!("{}: Getting avail_bytes failed: {:?}", function_name!(), e);
+            return 0 as jlong;
+        }
+    };
+    trace!("{}: returning {}", function_name!(), bytes);
+    bytes as jlong
 }
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_nGetMixerCnt
 	(JNIEnv *env, jclass clazz)
  */
+#[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nGetMixerCnt
-(env: JNIEnv, clazz: JClass) -> jint {
-    1
+(_env: JNIEnv, _clazz: JClass) -> jint {
+    trace!("{}", function_name!());
+    let cnt = match do_get_device_cnt() {
+        Ok(cnt) => cnt,
+        Err(e) => {
+            error!("{}: Getting DeviceCollection failed: {:?}", function_name!(), e);
+            return 0 as jint;
+        }
+    };
+    cnt as jint
 }
+
 
 const MIXER_INFO_CLASS: &'static str = "com/cleansine/sound/provider/SimpleMixerInfo";
 const MIXER_INFO_SIGNATURE: &'static str = "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
@@ -214,7 +386,16 @@ JNIEXPORT jobject JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCreateMixerInfo
-(env: JNIEnv, clazz: JClass, idx: jint) -> jobject {
+(env: JNIEnv, _clazz: JClass, idx: jint) -> jobject {
+    trace!("{}", function_name!());
+    let desc = match do_get_mixer_desc(idx as u32) {
+        Ok(desc) => desc,
+        Err(err) => {
+            error!("{}: Getting MixerDesc for idx {} failed: {:?}", function_name!(), idx, err);
+            return JObject::null().into_inner();
+        }
+    };
+
     let info_cls = match env.find_class(MIXER_INFO_CLASS) {
         Ok(c) => c,
         Err(err) => {
@@ -223,15 +404,6 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCr
         }
     };
 
-    // TODO vratit desc s parametrem idx
-    let desc = MixerDesc {
-        down_counter: idx as usize,
-        deviceID: "DEVICE".to_string(),
-        max_lines: 1,
-        name: "NAME".to_string(),
-        description: "DESC".to_string(),
-    };
-    // if (doFillDesc(&desc)) {
     let deviceID = env.new_string(desc.deviceID).unwrap();
     let name = env.new_string(desc.name).unwrap();
     let description = env.new_string(desc.description).unwrap();
@@ -257,9 +429,43 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCr
 }
 
 
-#[no_mangle]
-pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
-(env: JNIEnv, _clazz: JClass) -> jboolean {
-    println!("LIB INITIALIZED!");
-    1 as jboolean
+fn get_direction(isSource: jboolean) -> Direction {
+    if isSource > 0 { Direction::Render } else { Direction::Capture }
+}
+
+
+fn get_rtd_box_ptr(rtd: RuntimeData) -> jlong {
+    let rtd_box: Box<RuntimeData> = Box::new(rtd);
+    let raw: *mut RuntimeData = Box::into_raw(rtd_box);
+    raw as jlong
+}
+
+
+// java -> rust
+// static - HACK!
+fn get_rtd(ptr: jlong) -> &'static mut RuntimeData {
+    // TODO - check for ptr != 0
+    let rtd: &mut RuntimeData = unsafe { jlong_to_pointer::<RuntimeData>(ptr).as_mut().unwrap() };
+    rtd
+}
+
+fn get_rtd_box(ptr: jlong) -> Box<RuntimeData> {
+    // TODO - check for ptr != 0
+    // Box destructor will free the allocated heap memory
+    let rtd_box = unsafe { Box::from_raw(jlong_to_pointer::<RuntimeData>(ptr)) };
+    rtd_box
+}
+
+#[cfg(target_pointer_width = "32")]
+pub unsafe fn jlong_to_pointer<T>(ptr: jlong) -> *mut T { (ptr as u32) as *mut T }
+
+#[cfg(target_pointer_width = "64")]
+pub unsafe fn jlong_to_pointer<T>(ptr: jlong) -> *mut T {
+    ptr as *mut T
+}
+
+fn get_string(env: JNIEnv, str: JString) -> String {
+    env.get_string(str)
+        .expect("Couldn't get java string!")
+        .into()
 }
