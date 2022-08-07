@@ -189,9 +189,9 @@ fn get_device_by_id(device_id: &str) -> Res<(Device, Direction)> {
     Ok((dev, dir))
 }
 
-pub fn do_get_formats(device_id: String, dir: Direction) -> Res<Vec<Format>> {
+pub fn do_get_formats(device_id: String, dir: &Direction) -> Res<Vec<Format>> {
     let (dev, dev_dir) = get_device_by_id(&device_id)?;
-    let fmts = if dir == dev_dir { get_device_formats(dev)? } else { vec!() };
+    let fmts = if *dir == dev_dir { get_device_formats(dev)? } else { vec!() };
     Ok(fmts)
 }
 
@@ -235,26 +235,26 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
 }
 
 
-pub fn do_open_dev(device_id: String, dir: Direction, rate: usize, validbits: usize, frame_bytes: usize,
+pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: usize, frame_bytes: usize,
                    channels: usize, buffer_bytes: usize) -> Res<RuntimeData> {
-    let (_device, device_name, audio_client) = get_device_details(&device_id, &dir)?;
+    let (_device, device_name, audio_client) = get_device_details(&device_id, dir)?;
     debug!("Opening {} device {}: rate: {}, validbits: {}, frame_bytes: {}, channels: {}, buffer_bytes: {}",
-        dir_str(&dir), device_name, rate, validbits, frame_bytes, channels, buffer_bytes);
+        dir, device_name, rate, validbits, frame_bytes, channels, buffer_bytes);
     let (_def_period, min_period) = audio_client.get_periods()?;
     debug!(
         "{}: default period {}, min period {}",
-        dir_str(&dir),
+        dir,
         _def_period, min_period
     );
 
-    let is_playback = dir == Direction::Render;
+    let is_playback = *dir == Direction::Render;
 
     // 30 ms
     let dev_period = cmp::max(30 * 10_000, min_period);
     // this code assumes device.Initialize will use closely similar buffer to dev_period
     let estimated_chunk_frames = (rate as i64 * dev_period / 10_000_000) as usize;
     let chunks = ((buffer_bytes as f32 / frame_bytes as f32) / estimated_chunk_frames as f32) as usize;
-    trace!("{}: Using {} chunks in buffer => total estimated {} bytes", dir_str(&dir), chunks, chunks * estimated_chunk_frames * frame_bytes);
+    trace!("{}: Using {} chunks in buffer => total estimated {} bytes", dir, chunks, chunks * estimated_chunk_frames * frame_bytes);
     let (play_tx_dev, play_rx_dev, play_draining_rx_dev) = if is_playback {
         let (tx, rx) = bounded(chunks);
         (Some(tx), Some(rx.clone()), Some(rx))
@@ -302,7 +302,7 @@ pub fn do_open_dev(device_id: String, dir: Direction, rate: usize, validbits: us
     // wasapi device loop
     // TODO - joining the thread somehow?
     let _innerhandle = thread::Builder::new()
-        .name(format!("Wasapi{}Inner", dir_str(&dir)).to_string())
+        .name(format!("Wasapi{}Inner", dir).to_string())
         .spawn(move || {
             let (_device, audio_client, handle, client_buffer_frames) =
                 match device_open(
@@ -364,7 +364,7 @@ pub fn do_open_dev(device_id: String, dir: Direction, rate: usize, validbits: us
                 )
             };
             if let Err(err) = result {
-                let msg = format!("{}: Looping failed with error: {:?}", dir_str(&dir_cloned), err);
+                let msg = format!("{}: Looping failed with error: {:?}", dir_cloned, err);
                 error!("{}", msg);
                 tx_state_dev.send(DeviceState::Error(msg)).unwrap_or(());
             }
@@ -385,7 +385,7 @@ pub fn do_open_dev(device_id: String, dir: Direction, rate: usize, validbits: us
     let rtd = RuntimeData {
         device_id,
         device_name,
-        dir,
+        dir: dir.clone(),
         play_tx_dev,
         play_draining_rx_dev,
         capt_rx_dev,
@@ -433,10 +433,10 @@ pub fn do_open_dev(device_id: String, dir: Direction, rate: usize, validbits: us
     Ok(rtd)
 }
 
-pub fn do_get_buffer_bytes(rtd: &RuntimeData, dir: Direction) -> Res<usize> {
-    check_direction_from_rt(rtd, &dir, "get_buffer_bytes")?;
+pub fn do_get_buffer_bytes(rtd: &RuntimeData, dir: &Direction) -> Res<usize> {
+    check_direction_from_rt(rtd, dir, "get_buffer_bytes")?;
     // total bytes storable in all chunks in the FIFO tx_dev
-    let chunks = if dir == Direction::Render {
+    let chunks = if *dir == Direction::Render {
         rtd.play_tx_dev.as_ref().unwrap().capacity().unwrap()
     } else {
         rtd.capt_rx_dev.as_ref().unwrap().capacity().unwrap()
@@ -444,22 +444,14 @@ pub fn do_get_buffer_bytes(rtd: &RuntimeData, dir: Direction) -> Res<usize> {
     Ok(chunks * rtd.chunk_frames * rtd.frame_bytes)
 }
 
-pub fn dir_str(dir: &Direction) -> &str {
-    let str = match *dir {
-        Direction::Capture => "CAPT",
-        Direction::Render => "PLAY",
-    };
-    str
-}
-
-pub fn do_start(rtd: &RuntimeData, dir: Direction) -> Res<()> {
-    check_direction_from_rt(rtd, &dir, "start")?;
+pub fn do_start(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
+    check_direction_from_rt(rtd, dir, "start")?;
     rtd.start_signal.store(true, Ordering::Release);
     Ok(())
 }
 
-pub fn do_stop(rtd: &RuntimeData, dir: Direction) -> Res<()> {
-    check_direction_from_rt(rtd, &dir, "stop")?;
+pub fn do_stop(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
+    check_direction_from_rt(rtd, dir, "stop")?;
     rtd.stop_signal.store(true, Ordering::Release);
     Ok(())
 }
@@ -591,9 +583,9 @@ pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, da
     Ok(data_len)
 }
 
-pub fn do_get_avail_bytes(rtd: &RuntimeData, dir: Direction) -> Res<usize> {
+pub fn do_get_avail_bytes(rtd: &RuntimeData, dir: &Direction) -> Res<usize> {
     check_direction_from_rt(rtd, &dir, "do_get_avail_bytes")?;
-    let avail_bytes = if dir == Direction::Render {
+    let avail_bytes = if *dir == Direction::Render {
         // all currently available room without blocking. I.e. remaining room in the queue minus leftover samples
         // (which will be copied to the queue as first)
         let tx = rtd.play_tx_dev.as_ref().unwrap();
@@ -609,10 +601,10 @@ pub fn do_get_avail_bytes(rtd: &RuntimeData, dir: Direction) -> Res<usize> {
     Ok(avail_bytes as usize)
 }
 
-pub fn do_get_byte_pos(rtd: &RuntimeData, dir: Direction, java_byte_pos: u64) -> Res<u64> {
+pub fn do_get_byte_pos(rtd: &RuntimeData, dir: &Direction, java_byte_pos: u64) -> Res<u64> {
     check_direction_from_rt(rtd, &dir, "do_get_byte_pos")?;
     // TODO - reading extra data from audioclient?
-    let byte_pos = if dir == Direction::Render {
+    let byte_pos = if *dir == Direction::Render {
         let queued_bytes = rtd.play_tx_dev.as_ref().unwrap().len() * rtd.chunk_frames * rtd.frame_bytes
             + rtd.leftovers_pos.load(Ordering::Acquire);
         // queued bytes are not played yet, however they are already part of java_byte_pos sent to native - must be subtracted
@@ -627,8 +619,8 @@ pub fn do_get_byte_pos(rtd: &RuntimeData, dir: Direction, java_byte_pos: u64) ->
     Ok(byte_pos as u64)
 }
 
-pub fn do_close(rtd: &RuntimeData, dir: Direction) -> Res<()> {
-    check_direction_from_rt(rtd, &dir, "do_close")?;
+pub fn do_close(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
+    check_direction_from_rt(rtd, dir, "do_close")?;
     debug!("requested closing device {}", rtd.device_name);
     rtd.exit_signal.store(true, Ordering::Release);
     Ok(())
@@ -670,8 +662,8 @@ pub fn do_flush(rtd: &RuntimeData) {
 
 fn check_direction(device_dir: &Direction, checked_dir: &Direction, device_id: &str, fn_name: &str) -> Res<()> {
     if device_dir != checked_dir {
-        let msg = format!("Called {} for device ID {} with wrong direction {:?}",
-                          fn_name, device_id, dir_str(&checked_dir));
+        let msg = format!("Called {} for device ID {} with wrong direction {}",
+                          fn_name, device_id, checked_dir);
         return Err(msg.into());
     }
     Ok(())
@@ -721,9 +713,9 @@ pub fn device_open(
             return Err(err);
         }
     };
-    debug!("initialized {} device {} with device period {} and format {:?}", dir_str(dir), device_id, dev_period, wvformat);
+    debug!("initialized {} device {} with device period {} and format {:?}", dir, device_id, dev_period, wvformat);
     let handle = audio_client.set_get_eventhandle()?;
-    debug!("Opened Wasapi device {} in {}", dev_name, dir_str(&dir));
+    debug!("Opened Wasapi device {} in {}", dev_name, dir);
     Ok((device, audio_client, handle))
 }
 

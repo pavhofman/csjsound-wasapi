@@ -82,7 +82,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 (env: JNIEnv, clazz: JClass, deviceID: JString, isSource: jboolean, formatsVec: JObject) {
     let deviceIDStr = get_string(env, deviceID);
 
-    let formats = match do_get_formats(deviceIDStr, get_direction(isSource)) {
+    let formats = match do_get_formats(deviceIDStr, &get_direction(isSource)) {
         Ok(formats) => formats,
         Err(err) => {
             error!("{}: get_fmts failed: {:?}\n", function_name!(), err);
@@ -131,7 +131,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
  _enc: jint, rate: jint, sampleSignBits: jint, frameBytes: jint, channels: jint,
  _isSigned: jboolean, _isBigEndian: jboolean, bufferBytes: jint) -> jlong {
     let deviceIDStr = get_string(env, deviceID);
-    let rtd: RuntimeData = match do_open_dev(deviceIDStr, get_direction(isSource), rate as usize,
+    let rtd: RuntimeData = match do_open_dev(deviceIDStr, &get_direction(isSource), rate as usize,
                                              sampleSignBits as usize, frameBytes as usize,
                                              channels as usize, bufferBytes as usize) {
         Ok(rtd) => rtd,
@@ -156,7 +156,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStart
 (_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
     let rtd = get_rtd(nativePtr);
-    match do_start(rtd, get_direction(isSource)) {
+    match do_start(rtd, &get_direction(isSource)) {
         Ok(_) => {}
         Err(err) => {
             error!("{}: start failed: {:?}\n", function_name!(), err);
@@ -175,7 +175,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStop
 (_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
     let rtd = get_rtd(nativePtr);
-    match do_stop(rtd, get_direction(isSource)) {
+    match do_stop(rtd, &get_direction(isSource)) {
         Ok(_) => {}
         Err(err) => {
             error!("{}: stop failed: {:?}\n", function_name!(), err);
@@ -196,7 +196,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
 
     // need to release the allocated memory => getting the box
     let rtd = get_rtd_box(nativePtr);
-    match do_close(&rtd, get_direction(isSource)) {
+    match do_close(&rtd, &get_direction(isSource)) {
         Ok(_) => {}
         Err(err) => {
             error!("{}: closing failed: {:?}\n", function_name!(), err);
@@ -265,18 +265,16 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferB
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferBytes
 (_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
     let dir = get_direction(isSource);
-    let dir_cloned = dir.clone();
-    let dirstr = dir_str(&dir_cloned);
-    trace!("{} {}", function_name!(), dirstr);
+    trace!("{} {}", function_name!(), dir);
     let rtd = get_rtd(nativePtr);
-    let bytes = match do_get_buffer_bytes(rtd, dir) {
+    let bytes = match do_get_buffer_bytes(rtd, &dir) {
         Ok(size) => size,
         Err(e) => {
             error!("{}: Getting buffer_bytes failed: {:?}", function_name!(), e);
             return 0 as jint;
         }
     };
-    trace!("{} {}: returning {}", function_name!(), dirstr, bytes);
+    trace!("{} {}: returning {}", function_name!(), dir, bytes);
     bytes as jint
 }
 
@@ -318,19 +316,17 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBy
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBytes
 (_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
     let dir = get_direction(isSource);
-    let dir_cloned = dir.clone();
-    let dirstr = dir_str(&dir_cloned);
-    trace!("{} {}", function_name!(), dirstr);
+    trace!("{} {}", function_name!(), dir);
 
     let rtd = get_rtd(nativePtr);
-    let bytes = match do_get_avail_bytes(rtd, dir) {
+    let bytes = match do_get_avail_bytes(rtd, &dir) {
         Ok(size) => size,
         Err(e) => {
             error!("{}: Getting avail_bytes failed: {:?}", function_name!(), e);
             return 0 as jint;
         }
     };
-    trace!("{} {}: returning {}", function_name!(), dirstr, bytes);
+    trace!("{} {}: returning {}", function_name!(), dir, bytes);
     bytes as jint
 }
 
@@ -345,7 +341,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
 (_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean, javaBytePos: jlong) -> jlong {
     trace!("{}", function_name!());
     let rtd = get_rtd(nativePtr);
-    let bytes = match do_get_byte_pos(rtd, get_direction(isSource), javaBytePos as u64) {
+    let bytes = match do_get_byte_pos(rtd, &get_direction(isSource), javaBytePos as u64) {
         Ok(size) => size,
         Err(e) => {
             error!("{}: Getting avail_bytes failed: {:?}", function_name!(), e);
