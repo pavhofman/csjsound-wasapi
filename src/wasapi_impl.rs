@@ -107,8 +107,8 @@ fn fill_format_variants() -> Vec<(WaveFormat, Format)> {
     let rate_variants: Vec<usize> = vec!(44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
                                          705_600, 768_00, 1_411_200, 1_536_000);
     // TODO - compatibility with REW
-    //let channels_variants: Vec<usize> = vec!(1, 2, 4, 6, 8);
-    let channels_variants: Vec<usize> = vec!(1, 2);
+    let channels_variants: Vec<usize> = vec!(1, 2, 4, 6, 8);
+    //let channels_variants: Vec<usize> = vec!(1, 2);
     let valid_store_bits_variants = vec!((16, 16), (24, 24), (24, 32), (32, 32));
     for rate in rate_variants {
         for channels in &channels_variants {
