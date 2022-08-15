@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError, unbounded};
 use lazy_static::lazy_static;
 use log::{debug, error, trace, warn};
-use wasapi::{AudioClient, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_mta, SampleType, ShareMode, WaveFormat};
+use wasapi::{AudioClient, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_sta, SampleType, ShareMode, WaveFormat};
 use windows::core::PCWSTR;
 use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 
@@ -141,7 +141,7 @@ impl From<WaveFormat> for Format {
 }
 
 pub fn do_initialize_wasapi() -> Res<()> {
-    initialize_mta()?;
+    initialize_sta()?;
     Ok(())
 }
 
