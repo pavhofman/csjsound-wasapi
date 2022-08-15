@@ -17,7 +17,7 @@ use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 use crate::{Format, MixerDesc, Res};
 
 lazy_static! {
-    static ref WV_FMT_MAPPING: Vec<(WaveFormat, Format)> = fill_vector();
+    static ref WV_FMT_MAPPING: Vec<(WaveFormat, Format)> = fill_format_variants();
 }
 
 // defined in JAVA
@@ -102,7 +102,7 @@ enum DeviceState {
 }
 
 
-fn fill_vector() -> Vec<(WaveFormat, Format)> {
+fn fill_format_variants() -> Vec<(WaveFormat, Format)> {
     let mut map = Vec::new();
     let rate_variants: Vec<usize> = vec!(44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
                                          705_600, 768_00, 1_411_200, 1_536_000);
