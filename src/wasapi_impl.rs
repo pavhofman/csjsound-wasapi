@@ -446,13 +446,13 @@ pub fn do_get_buffer_bytes(rtd: &RuntimeData, dir: &Direction) -> Res<usize> {
 
 pub fn do_start(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
     check_direction_from_rt(rtd, dir, "start")?;
-    rtd.start_signal.store(true, Ordering::Release);
+    rtd.start_signal.store(true, Ordering::Relaxed);
     Ok(())
 }
 
 pub fn do_stop(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
     check_direction_from_rt(rtd, dir, "stop")?;
-    rtd.stop_signal.store(true, Ordering::Release);
+    rtd.stop_signal.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -465,7 +465,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
     // rtd.outer_file.write_all(data_to_write);
     // rtd.outer_file.flush();
     // copying leftovers if any to the first chunk
-    let mut leftovers_pos = rtd.leftovers_pos.load(Ordering::Acquire);
+    let mut leftovers_pos = rtd.leftovers_pos.load(Ordering::Relaxed);
 
     // if leftovers + data_to_write do not fill whole chunk
     if leftovers_pos + data_len < chunk_bytes {
@@ -473,7 +473,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
         trace!("write: leftovers_pos {} + data_len {} < chunk_bytes {}: only copying to leftovers",
         leftovers_pos, data_len, chunk_bytes);
         rtd.leftovers[leftovers_pos..leftovers_pos + data_len].copy_from_slice(&data_to_write);
-        rtd.leftovers_pos.store(leftovers_pos + data_len, Ordering::Release);
+        rtd.leftovers_pos.store(leftovers_pos + data_len, Ordering::Relaxed);
         // finished, no chunk to be sent to the inner thread
         return Ok(data_len);
     }
@@ -523,7 +523,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
         leftovers_pos = data_to_write.len();
         rtd.leftovers[0..leftovers_pos].copy_from_slice(data_to_write);
     }
-    rtd.leftovers_pos.store(leftovers_pos, Ordering::Release);
+    rtd.leftovers_pos.store(leftovers_pos, Ordering::Relaxed);
     Ok(data_len)
 }
 
@@ -535,7 +535,7 @@ pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, da
     let buffer = &mut input_buffer[offset..(offset + data_len)];
 
     // copying leftovers if any to the beginning of the output java_buffer
-    let mut leftovers_pos = rtd.leftovers_pos.load(Ordering::Acquire);
+    let mut leftovers_pos = rtd.leftovers_pos.load(Ordering::Relaxed);
     if leftovers_pos > 0 {
         buffer[0..leftovers_pos].copy_from_slice(&rtd.leftovers[0..leftovers_pos]);
         read_len += leftovers_pos;
@@ -576,7 +576,7 @@ pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, da
         }
     }
     // storing persistent data
-    rtd.leftovers_pos.store(leftovers_pos, Ordering::Release);
+    rtd.leftovers_pos.store(leftovers_pos, Ordering::Relaxed);
     rtd.capt_last_chunk_nbr = expected_chunk_nbr;
 
     // returning only output_buffer, i.e. data_len
@@ -590,12 +590,12 @@ pub fn do_get_avail_bytes(rtd: &RuntimeData, dir: &Direction) -> Res<usize> {
         // (which will be copied to the queue as first)
         let tx = rtd.play_tx_dev.as_ref().unwrap();
         // (tx.capacity().unwrap() + 1 - tx.len()) * rtd.chunk_frames * rtd.frame_bytes
-        //     - rtd.leftovers_pos.load(Ordering::Acquire)
+        //     - rtd.leftovers_pos.load(Ordering::Relaxed)
         (tx.capacity().unwrap() - tx.len()) * rtd.chunk_frames * rtd.frame_bytes
     } else {
         // reading without blocking => all currently available samples
         rtd.capt_rx_dev.as_ref().unwrap().len() * rtd.chunk_frames * rtd.frame_bytes
-            + rtd.leftovers_pos.load(Ordering::Acquire)
+            + rtd.leftovers_pos.load(Ordering::Relaxed)
     };
     trace!("do_get_avail_bytes: {}", avail_bytes);
     Ok(avail_bytes as usize)
@@ -606,12 +606,12 @@ pub fn do_get_byte_pos(rtd: &RuntimeData, dir: &Direction, java_byte_pos: u64) -
     // TODO - reading extra data from audioclient?
     let byte_pos = if *dir == Direction::Render {
         let queued_bytes = rtd.play_tx_dev.as_ref().unwrap().len() * rtd.chunk_frames * rtd.frame_bytes
-            + rtd.leftovers_pos.load(Ordering::Acquire);
+            + rtd.leftovers_pos.load(Ordering::Relaxed);
         // queued bytes are not played yet, however they are already part of java_byte_pos sent to native - must be subtracted
         java_byte_pos - queued_bytes as u64
     } else {
         let queued_bytes = rtd.capt_rx_dev.as_ref().unwrap().len() * rtd.chunk_frames * rtd.frame_bytes
-            + rtd.leftovers_pos.load(Ordering::Acquire);
+            + rtd.leftovers_pos.load(Ordering::Relaxed);
         // already in java + what we already have captured in native
         java_byte_pos + queued_bytes as u64
     };
@@ -622,7 +622,7 @@ pub fn do_get_byte_pos(rtd: &RuntimeData, dir: &Direction, java_byte_pos: u64) -
 pub fn do_close(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
     check_direction_from_rt(rtd, dir, "do_close")?;
     debug!("requested closing device {}", rtd.device_name);
-    rtd.exit_signal.store(true, Ordering::Release);
+    rtd.exit_signal.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -630,13 +630,13 @@ pub fn do_drain(rtd: &RuntimeData) {
     debug!("draining device {}", rtd.device_name);
     if rtd.dir == Direction::Capture {
         // stopping the capture device first
-        rtd.stop_signal.store(true, Ordering::Release);
+        rtd.stop_signal.store(true, Ordering::Relaxed);
     }
     loop {
         if rtd.dir == Direction::Render {
-            if (rtd.play_tx_dev.as_ref().unwrap().len()) == 0 && rtd.bufferfill_bytes.load(Ordering::Acquire) == 0 {
+            if (rtd.play_tx_dev.as_ref().unwrap().len()) == 0 && rtd.bufferfill_bytes.load(Ordering::Relaxed) == 0 {
                 // card has already consumed all samples in the interthread and internal buffers
-                rtd.stop_signal.store(true, Ordering::Release);
+                rtd.stop_signal.store(true, Ordering::Relaxed);
                 break;
             }
         } else {
@@ -807,29 +807,29 @@ fn playback_loop(
         }
         device_prevtime = device_time;
 
-        if sync.start_signal.load(Ordering::Acquire) {
+        if sync.start_signal.load(Ordering::Relaxed) {
             debug!("Starting inner capture loop");
             if !running {
                 audio_client.start_stream()?;
                 running = true;
             }
-            sync.start_signal.store(false, Ordering::Release);
+            sync.start_signal.store(false, Ordering::Relaxed);
             // staying in the loop
         }
-        if sync.stop_signal.load(Ordering::Acquire) {
+        if sync.stop_signal.load(Ordering::Relaxed) {
             debug!("Stopping inner capture loop");
             if running {
                 audio_client.stop_stream()?;
                 running = false;
             }
-            sync.stop_signal.store(false, Ordering::Release);
+            sync.stop_signal.store(false, Ordering::Relaxed);
             // staying in the loop
         }
-        if sync.exit_signal.load(Ordering::Acquire) {
+        if sync.exit_signal.load(Ordering::Relaxed) {
             debug!("Exiting inner playback loop");
             audio_client.stop_stream()?;
             running = false;
-            sync.exit_signal.store(false, Ordering::Release);
+            sync.exit_signal.store(false, Ordering::Relaxed);
             //file.flush();
             return Ok(());
         }
@@ -874,7 +874,7 @@ fn playback_loop(
                 None,
             )?;
             // for reporting position
-            sync.wasapi_bufferfill_bytes.store(chunk_frames * frame_bytes, Ordering::Release);
+            sync.wasapi_bufferfill_bytes.store(chunk_frames * frame_bytes, Ordering::Relaxed);
             trace!("write ok");
             let now = Instant::now();
             if handle.wait_for_event(1000).is_err() {
@@ -885,7 +885,7 @@ fn playback_loop(
             }
             trace!("playback waited for event: {:?}", now.elapsed());
             // buffer empty
-            sync.wasapi_bufferfill_bytes.store(0, Ordering::Release);
+            sync.wasapi_bufferfill_bytes.store(0, Ordering::Relaxed);
         }
         pos = clock.get_position()?.0;
     }
@@ -939,29 +939,29 @@ fn capture_loop(
     let mut now = Instant::now();
     loop {
         trace!("capturing");
-        if sync.start_signal.load(Ordering::Acquire) {
+        if sync.start_signal.load(Ordering::Relaxed) {
             debug!("Starting capture device");
             if !running {
                 audio_client.start_stream()?;
                 running = true;
             }
-            sync.start_signal.store(false, Ordering::Release);
+            sync.start_signal.store(false, Ordering::Relaxed);
             // staying in the loop
         }
-        if sync.stop_signal.load(Ordering::Acquire) {
+        if sync.stop_signal.load(Ordering::Relaxed) {
             debug!("Stopping capture device");
             if running {
                 audio_client.stop_stream()?;
                 running = false;
             }
-            sync.stop_signal.store(false, Ordering::Release);
+            sync.stop_signal.store(false, Ordering::Relaxed);
             // staying in the loop
         }
-        if sync.exit_signal.load(Ordering::Acquire) {
+        if sync.exit_signal.load(Ordering::Relaxed) {
             debug!("Exiting inner capture loop");
             audio_client.stop_stream()?;
             running = false;
-            sync.exit_signal.store(false, Ordering::Release);
+            sync.exit_signal.store(false, Ordering::Relaxed);
             return Ok(());
         }
 
