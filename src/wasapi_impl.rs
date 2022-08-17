@@ -195,27 +195,51 @@ pub fn do_get_formats(device_id: String, dir: &Direction) -> Res<Vec<Format>> {
     Ok(fmts)
 }
 
+fn is_format_supported(client: &AudioClient, dev_name: &str, wvformat: &WaveFormat, format: &Format) -> Option<Format> {
+    let result = match client.is_supported(wvformat, &ShareMode::Exclusive) {
+        Ok(None) => {
+            debug!("Device {} supports format {:?}", dev_name, *wvformat);
+            Some(format.clone())
+        }
+        Ok(Some(similar_wvfmt)) => {
+            let format = Format::from(similar_wvfmt);
+            debug!("Device {} supports similar format {:?}", dev_name, format);
+            Some(format.clone())
+        }
+        Err(err) => {
+            debug!("Device {} does not support format {:?}: {}", dev_name, wvformat, err);
+            None
+        }
+    };
+    result
+}
+
 fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
     let mut formats = Vec::new();
     let dev_name = dev.get_friendlyname()?;
     let client = dev.get_iaudioclient()?;
     let mut supported_validbits_framebytes: HashSet<(i32, i32)> = HashSet::new();
     for (wvformat, format) in &*WV_FMT_MAPPING {
-        match client.is_supported(wvformat, &ShareMode::Exclusive) {
-            Ok(None) => {
-                supported_validbits_framebytes.insert((format.validbits, format.frame_bytes));
-                formats.push((*format).clone());
-                debug!("Device {} supports format {:?}", dev_name, *wvformat);
+        // wvformat is wavextensible from wasapi-rs
+        match is_format_supported(&client, &dev_name, wvformat, format) {
+            Some(ok_format) => {
+                supported_validbits_framebytes.insert((ok_format.validbits, ok_format.frame_bytes));
+                formats.push((ok_format).clone());
             }
-            Ok(Some(similar_wvfmt)) => {
-                let format = Format::from(similar_wvfmt);
-                supported_validbits_framebytes.insert((format.validbits, format.frame_bytes));
-                formats.push(format.clone());
-                debug!("Device {} supports similar format {:?}", dev_name, format);
-            }
-            Err(err) => {
-                trace!("Device {} does not support format {:?}: {}", dev_name, wvformat, err);
-                // unsupported
+            None => {
+                // trying wavex format
+                let mut modified_wvformat = &mut wvformat.clone();
+                modified_wvformat.wave_fmt.Format.wFormatTag = 1 as u16;  // PCM
+                modified_wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
+                match is_format_supported(&client, &dev_name, modified_wvformat, format) {
+                    Some(ok_format) => {
+                        supported_validbits_framebytes.insert((ok_format.validbits, ok_format.frame_bytes));
+                        formats.push((ok_format).clone());
+                    }
+                    None => {
+                        // really unsupported
+                    }
+                }
             }
         }
     }
@@ -673,7 +697,6 @@ fn check_direction_from_rt(rtd: &RuntimeData, dir: &Direction, fn_name: &str) ->
     check_direction(&rtd.dir, dir, &rtd.device_id, fn_name)
 }
 
-
 pub fn device_open(
     device_id: &str,
     dir: &Direction, rate: usize, validbits: usize, frame_bytes: usize,
@@ -689,7 +712,7 @@ pub fn device_open(
                                    &SampleType::Int, rate, channels);
     match audio_client.is_supported(&wvformat, &sharemode) {
         Ok(None) => {
-            debug!("Device {}: supports format {:?}", dev_name, wvformat)
+            debug!("%s: Opening device {}: supports format {:?}", dev_name, wvformat)
         }
         Ok(Some(modified)) => {
             let msg = format!("Device {}: requested modified format: {:?}", dev_name, modified);
