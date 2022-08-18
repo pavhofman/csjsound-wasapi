@@ -713,15 +713,16 @@ pub fn device_open(
                                        &SampleType::Int, rate, channels);
     match get_supported_format(&audio_client, &dev_name, &wvformat) {
         Some(ok_wvformat) => {
-            debug!("%s: Opening device {}: supports format {:?}", dev_name, ok_wvformat);
+            debug!("%s: Opening device {}: supports requested format {:?}", dev_name, ok_wvformat);
             wvformat = ok_wvformat;
         }
         None => {
+            let msg = format!("Opening device {}: unsupported requested format: {:?}", dev_name, wvformat);
             // trying zero chMask
             wvformat.wave_fmt.dwChannelMask = 0;
             match get_supported_format(&audio_client, &dev_name, &wvformat) {
                 Some(ok_wvformat) => {
-                    debug!("%s: dwChannelMask=0 check: Opening device {}: supports format {:?}", dev_name, ok_wvformat);
+                    debug!("%s: dwChannelMask=0 check: Opening device {}: supports modified format {:?}", dev_name, ok_wvformat);
                     wvformat = ok_wvformat;
                 }
                 None => {
@@ -731,16 +732,16 @@ pub fn device_open(
                         wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
                         match get_supported_format(&audio_client, &dev_name, &wvformat) {
                             Some(ok_wvformat) => {
-                                debug!("%s: WAVEX check: Opening device {}: supports format {:?}", dev_name, ok_wvformat);
+                                debug!("%s: WAVEX check: Opening device {}: supports modified format {:?}", dev_name, ok_wvformat);
                                 wvformat = ok_wvformat;
                             }
                             None => {
-                                let msg = format!("WAVEX check: Opening device {}: unsupported format: {:?}", dev_name, wvformat);
+                                let msg = format!("WAVEX check: Opening device {}: unsupported modified format: {:?}", dev_name, wvformat);
                                 return Err(msg.into());
                             }
                         }
                     } else {
-                        let msg = format!("Opening device {}: unsupported format: {:?}", dev_name, wvformat);
+                        let msg = format!("dwChannelMask=0 check: Opening device {}: unsupported modified format: {:?}", dev_name, wvformat);
                         return Err(msg.into());
                     }
                 }
