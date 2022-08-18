@@ -1,5 +1,4 @@
 use std::{error, fmt, thread};
-#[macro_use]
 use std::cmp;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -232,20 +231,20 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
     let mut formats = Vec::new();
     let dev_name = dev.get_friendlyname()?;
     let client = dev.get_iaudioclient()?;
-    let mut supported_validbits_framebytes: HashSet<(i32, i32)> = HashSet::new();
+    let mut supported_validbits: HashSet<i32> = HashSet::new();
     for wvformat in &*WV_FMTS {
         // wvformat is wavextensible from wasapi-rs
         match get_supported_format(&client, &dev_name, wvformat) {
             Some(ok_wvformat) => {
                 let ok_format = Format::from(ok_wvformat);
-                supported_validbits_framebytes.insert((ok_format.validbits, ok_format.frame_bytes));
+                supported_validbits.insert(ok_format.validbits);
                 formats.push((ok_format).clone());
             }
             None => {}
         }
     }
     // adding formats with NOT_SPECIFIED channels and rate because only predefined values are checked
-    for (validbits, _frame_bytes) in supported_validbits_framebytes {
+    for validbits in supported_validbits {
         let format = Format {
             validbits,
             frame_bytes: NOT_SPECIFIED,
