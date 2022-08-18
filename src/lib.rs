@@ -12,8 +12,8 @@ use jni::JNIEnv;
 use jni::objects::{AutoPrimitiveArray, JClass, JObject, JString, JValue, ReleaseMode};
 use jni::signature::TypeSignature;
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jobject};
-use log::{debug, error, info, LevelFilter, trace};
-use simplelog::{CombinedLogger, ConfigBuilder, format_description, WriteLogger};
+use log::{error, info, LevelFilter, trace};
+use simplelog::{ConfigBuilder, format_description, WriteLogger};
 use wasapi::Direction;
 
 use wasapi_impl::*;
@@ -46,17 +46,45 @@ const ADD_FORMAT_SIGNATURE: &'static str = "(Ljava/util/Vector;IIIIIZZ)V";
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
-(_env: JNIEnv, _clazz: JClass) -> jboolean {
-    let level = LevelFilter::Debug;
+(env: JNIEnv, _clazz: JClass, logLevelID: jint, logTarget: JString) -> jboolean {
+    let log_target_str = get_string(env, logTarget);
+    let log_level: LevelFilter = match logLevelID as usize {
+        // same constants as in the java provider
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        4 => LevelFilter::Trace,
+        _ => LevelFilter::Error,
+    };
     let format = format_description!("[hour]:[minute]:[second].[subsecond]");
     let config = ConfigBuilder::new()
         .set_time_format_custom(format)
         .build();
-    let _ = CombinedLogger::init(vec![
-        //SimpleLogger::new(level, config.clone()),
-        WriteLogger::new(level, config, File::create("csjsound-dll.log").unwrap()),
-        //WriteLogger::new(level, config, io::stderr()),
-    ]);
+
+    match log_target_str.as_str() {
+        "stdout" => {
+            let _ = WriteLogger::init(log_level, config, io::stdout());
+        }
+        "stderr" => {
+            let _ = WriteLogger::init(log_level, config, io::stderr());
+        }
+        other => {
+            let file = match File::create(other) {
+                Ok(file) => { file }
+                Err(err) => {
+                    error!("{}: Failed to create log file {}: {}", function_name!(), other, err);
+                    return 0 as jboolean;
+                }
+            };
+            let _ = WriteLogger::init(log_level, config, file);
+        }
+    }
+    // let _ = CombinedLogger::init(vec![
+    //     //SimpleLogger::new(level, config.clone()),
+    //     //WriteLogger::new(level, config, targetWritable),
+    //     ,
+    // ]);
 
     trace!("{}", function_name!());
     return match do_initialize_wasapi() {
