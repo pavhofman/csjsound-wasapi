@@ -9,10 +9,10 @@ use std::io;
 
 use ::function_name::named;
 use jni::JNIEnv;
-use jni::objects::{AutoPrimitiveArray, JClass, JObject, JString, JValue, ReleaseMode};
+use jni::objects::{AutoArray, AutoPrimitiveArray, JClass, JObject, JString, JValue, ReleaseMode};
 use jni::signature::TypeSignature;
-use jni::sys::{jboolean, jbyteArray, jint, jlong, jobject};
-use log::{error, info, LevelFilter, trace};
+use jni::sys::{jboolean, jbyteArray, jint, jintArray, jlong, jobject};
+use log::{debug, error, info, LevelFilter, trace};
 use simplelog::{ConfigBuilder, format_description, WriteLogger};
 use wasapi::Direction;
 
@@ -46,7 +46,8 @@ const ADD_FORMAT_SIGNATURE: &'static str = "(Ljava/util/Vector;IIIIIZZ)V";
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
-(env: JNIEnv, _clazz: JClass, logLevelID: jint, logTarget: JString) -> jboolean {
+(env: JNIEnv, _clazz: JClass, logLevelID: jint, logTarget: JString,
+ jrates: jintArray, jchannels: jintArray, maxRatesLimit: jint, maxChannelsLimit: jint) -> jboolean {
     let log_target_str = get_string(env, logTarget);
     let log_level: LevelFilter = match logLevelID as usize {
         // same constants as in the java provider
@@ -87,6 +88,24 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
     // ]);
 
     trace!("{}", function_name!());
+
+    let rates = from_jint_array(env, jrates);
+    debug!("Received rates to test: {:?}", rates);
+    let channels = from_jint_array(env, jchannels);
+    debug!("Received channels to test: {:?}", channels);
+
+    let accepted_combination: Box<dyn Fn(usize, usize) -> bool> = if maxChannelsLimit > 0 && maxRatesLimit > 0 {
+        // limits were assigned
+        debug!("Received max rate {} and max channels {} to limit test combinations", maxRatesLimit, maxChannelsLimit);
+        Box::new(|rate: usize, channels: usize| rate < maxRatesLimit as usize || channels < maxChannelsLimit as usize)
+    } else {
+        // no limits, all combinations accepted
+        debug!("Received no max rate and max channels limits, will test all combinations");
+        Box::new(|rate: usize, channels: usize| true)
+    };
+
+    fill_format_variants(rates, channels, accepted_combination);
+
     return match do_initialize_wasapi() {
         Ok(_) => {
             info!("Lib initialized");
@@ -492,4 +511,16 @@ fn get_string(env: JNIEnv, str: JString) -> String {
     env.get_string(str)
         .expect("Couldn't get java string!")
         .into()
+}
+
+fn from_jint_array(env: JNIEnv, jarr: jintArray) -> Vec<usize> {
+    let auto_ptr: AutoArray<jint> = env.get_int_array_elements(jarr, ReleaseMode::NoCopyBack).unwrap();
+    let ptr = auto_ptr.as_ptr();
+    let cnt = auto_ptr.size().unwrap() as usize;
+    let mut values = vec![0; cnt];
+
+    for i in 0..cnt {
+        values[i] = unsafe { *ptr.offset(i as isize) } as usize;
+    }
+    values
 }

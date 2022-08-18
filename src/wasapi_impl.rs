@@ -3,6 +3,7 @@ use std::cmp;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,7 @@ use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 use crate::{Format, MixerDesc, Res};
 
 lazy_static! {
-    static ref WV_FMTS: Vec<WaveFormat> = fill_format_variants();
+    static ref WV_FMTS: Mutex<Vec<WaveFormat>> = Mutex::new(Vec::new());
 }
 
 // defined in JAVA
@@ -102,17 +103,13 @@ enum DeviceState {
 }
 
 
-fn fill_format_variants() -> Vec<WaveFormat> {
-    let mut formats = Vec::new();
-    let rate_variants: Vec<usize> = vec!(44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
-                                         705_600, 768_00, 1_411_200, 1_536_000);
-    let channels_variants: Vec<usize> = vec!(1, 2, 4, 6, 8, 10, 12, 14, 16);
-    //let channels_variants: Vec<usize> = vec!(1, 2);
+pub fn fill_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec<usize>, accepted_combination: T)
+    where T: Fn(usize, usize) -> bool {
     let valid_store_bits_variants = vec!((16, 16), (24, 24), (24, 32), (32, 32));
     for rate in rate_variants {
         for channels in &channels_variants {
             // upper limit on rate x channels combination
-            if !(rate > 384_000 && *channels > 8) {
+            if accepted_combination(rate, *channels) {
                 for (validbits, storebits) in &valid_store_bits_variants {
                     //WAVEXTENSIBLE
                     let mut wvformat = WaveFormat::new(
@@ -122,24 +119,23 @@ fn fill_format_variants() -> Vec<WaveFormat> {
                         rate,
                         *channels,
                     );
-                    formats.push(wvformat.clone());
+                    WV_FMTS.lock().unwrap().push(wvformat.clone());
 
                     // adding format with zero channel mask (some capture devices require that)
                     let mut zero_chmask_format = wvformat.clone();
                     zero_chmask_format.wave_fmt.dwChannelMask = 0;
-                    formats.push(zero_chmask_format);
+                    WV_FMTS.lock().unwrap().push(zero_chmask_format);
 
                     // adding WAVEX format for legacy formats (see https://docs.microsoft.com/en-us/windows/win32/coreaudio/device-formats#specifying-the-device-format)
                     if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
                         wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
                         wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
-                        formats.push(wvformat);
+                        WV_FMTS.lock().unwrap().push(wvformat);
                     }
                 }
             }
         }
     }
-    formats
 }
 
 impl From<WaveFormat> for Format {
@@ -234,7 +230,7 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
     let dev_name = dev.get_friendlyname()?;
     let client = dev.get_iaudioclient()?;
     let mut supported_validbits: HashSet<i32> = HashSet::new();
-    for wvformat in &*WV_FMTS {
+    for wvformat in &*WV_FMTS.lock().unwrap() {
         // wvformat is wavextensible from wasapi-rs
         match get_supported_format(&client, &dev_name, wvformat) {
             Some(ok_wvformat) => {
