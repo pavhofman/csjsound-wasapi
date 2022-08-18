@@ -106,33 +106,35 @@ fn fill_format_variants() -> Vec<WaveFormat> {
     let mut formats = Vec::new();
     let rate_variants: Vec<usize> = vec!(44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
                                          705_600, 768_00, 1_411_200, 1_536_000);
-    // TODO - compatibility with REW
-    let channels_variants: Vec<usize> = vec!(1, 2, 4, 6, 8, 10);
+    let channels_variants: Vec<usize> = vec!(1, 2, 4, 6, 8, 10, 12, 14, 16);
     //let channels_variants: Vec<usize> = vec!(1, 2);
     let valid_store_bits_variants = vec!((16, 16), (24, 24), (24, 32), (32, 32));
     for rate in rate_variants {
         for channels in &channels_variants {
-            for (validbits, storebits) in &valid_store_bits_variants {
-                //WAVEXTENSIBLE
-                let mut wvformat = WaveFormat::new(
-                    *storebits,
-                    *validbits,
-                    &SampleType::Int,
-                    rate,
-                    *channels,
-                );
-                formats.push(wvformat.clone());
+            // upper limit on rate x channels combination
+            if !(rate > 384_000 && *channels > 8) {
+                for (validbits, storebits) in &valid_store_bits_variants {
+                    //WAVEXTENSIBLE
+                    let mut wvformat = WaveFormat::new(
+                        *storebits,
+                        *validbits,
+                        &SampleType::Int,
+                        rate,
+                        *channels,
+                    );
+                    formats.push(wvformat.clone());
 
-                // adding format with zero channel mask (some capture devices require that)
-                let mut zero_chmask_format = wvformat.clone();
-                zero_chmask_format.wave_fmt.dwChannelMask = 0;
-                formats.push(zero_chmask_format);
+                    // adding format with zero channel mask (some capture devices require that)
+                    let mut zero_chmask_format = wvformat.clone();
+                    zero_chmask_format.wave_fmt.dwChannelMask = 0;
+                    formats.push(zero_chmask_format);
 
-                // adding WAVEX format for legacy formats (see https://docs.microsoft.com/en-us/windows/win32/coreaudio/device-formats#specifying-the-device-format)
-                if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
-                    wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
-                    wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
-                    formats.push(wvformat);
+                    // adding WAVEX format for legacy formats (see https://docs.microsoft.com/en-us/windows/win32/coreaudio/device-formats#specifying-the-device-format)
+                    if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
+                        wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
+                        wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
+                        formats.push(wvformat);
+                    }
                 }
             }
         }
