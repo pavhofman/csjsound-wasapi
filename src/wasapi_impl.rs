@@ -120,9 +120,15 @@ fn fill_format_variants() -> Vec<WaveFormat> {
                     *validbits,
                     &SampleType::Int,
                     rate,
-                    *channels as usize,
+                    *channels,
                 );
                 formats.push(wvformat.clone());
+
+                // adding format with zero channel mask (some capture devices require that)
+                let mut zero_chmask_format = wvformat.clone();
+                zero_chmask_format.wave_fmt.dwChannelMask = 0;
+                formats.push(zero_chmask_format);
+
                 // adding WAVEX format for legacy formats (see https://docs.microsoft.com/en-us/windows/win32/coreaudio/device-formats#specifying-the-device-format)
                 if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
                     wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
@@ -711,23 +717,33 @@ pub fn device_open(
             wvformat = ok_wvformat;
         }
         None => {
-            // trying wavex
-            if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
-                wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
-                wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
-                match get_supported_format(&audio_client, &dev_name, &wvformat) {
-                    Some(ok_wvformat) => {
-                        debug!("%s: WAVEX check: Opening device {}: supports format {:?}", dev_name, ok_wvformat);
-                        wvformat = ok_wvformat;
-                    }
-                    None => {
-                        let msg = format!("WAVEX check: Opening device {}: unsupported format: {:?}", dev_name, wvformat);
+            // trying zero chMask
+            wvformat.wave_fmt.dwChannelMask = 0;
+            match get_supported_format(&audio_client, &dev_name, &wvformat) {
+                Some(ok_wvformat) => {
+                    debug!("%s: dwChannelMask=0 check: Opening device {}: supports format {:?}", dev_name, ok_wvformat);
+                    wvformat = ok_wvformat;
+                }
+                None => {
+                    // trying wavex
+                    if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
+                        wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
+                        wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
+                        match get_supported_format(&audio_client, &dev_name, &wvformat) {
+                            Some(ok_wvformat) => {
+                                debug!("%s: WAVEX check: Opening device {}: supports format {:?}", dev_name, ok_wvformat);
+                                wvformat = ok_wvformat;
+                            }
+                            None => {
+                                let msg = format!("WAVEX check: Opening device {}: unsupported format: {:?}", dev_name, wvformat);
+                                return Err(msg.into());
+                            }
+                        }
+                    } else {
+                        let msg = format!("Opening device {}: unsupported format: {:?}", dev_name, wvformat);
                         return Err(msg.into());
                     }
                 }
-            } else {
-                let msg = format!("Opening device {}: unsupported format: {:?}", dev_name, wvformat);
-                return Err(msg.into());
             }
         }
     }
