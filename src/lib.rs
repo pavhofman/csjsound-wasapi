@@ -97,7 +97,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
     let accepted_combination: Box<dyn Fn(usize, usize) -> bool> = if maxChannelsLimit > 0 && maxRatesLimit > 0 {
         // limits were assigned
         debug!("Received max rate {} and max channels {} to limit test combinations", maxRatesLimit, maxChannelsLimit);
-        Box::new(|rate: usize, channels: usize| rate < maxRatesLimit as usize || channels < maxChannelsLimit as usize)
+        Box::new(|rate: usize, channels: usize| rate <= maxRatesLimit as usize || channels <= maxChannelsLimit as usize)
     } else {
         // no limits, all combinations accepted
         debug!("Received no max rate and max channels limits, will test all combinations");
