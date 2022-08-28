@@ -118,6 +118,7 @@ pub fn fill_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec
                         &SampleType::Int,
                         rate,
                         *channels,
+                        None,
                     );
                     WV_FMTS.lock().unwrap().push(wvformat.clone());
 
@@ -706,12 +707,16 @@ pub fn device_open(
     let sharemode = ShareMode::Exclusive;
     let (device, dev_name, mut audio_client) = get_device_details(&device_id, &dir)?;
 
-    let mut wvformat = WaveFormat::new(frame_bytes * 8 / channels, validbits,
-                                       &SampleType::Int, rate, channels);
-    match get_supported_format(&audio_client, &dev_name, &wvformat) {
+    let mut wvformat = WaveFormat::new(frame_bytes * 8 / channels,
+                                       validbits,
+                                       &SampleType::Int,
+                                       rate,
+                                       channels,
+                                       None);
+    wvformat = match get_supported_format(&audio_client, &dev_name, &wvformat) {
         Some(ok_wvformat) => {
             debug!("%s: Opening device {}: supports requested format {:?}", dev_name, ok_wvformat);
-            wvformat = ok_wvformat;
+            ok_wvformat
         }
         None => {
             let msg = format!("Opening device {}: unsupported requested format: {:?}", dev_name, wvformat);
@@ -720,7 +725,7 @@ pub fn device_open(
             match get_supported_format(&audio_client, &dev_name, &wvformat) {
                 Some(ok_wvformat) => {
                     debug!("%s: dwChannelMask=0 check: Opening device {}: supports modified format {:?}", dev_name, ok_wvformat);
-                    wvformat = ok_wvformat;
+                    ok_wvformat
                 }
                 None => {
                     // trying wavex
@@ -730,7 +735,7 @@ pub fn device_open(
                         match get_supported_format(&audio_client, &dev_name, &wvformat) {
                             Some(ok_wvformat) => {
                                 debug!("%s: WAVEX check: Opening device {}: supports modified format {:?}", dev_name, ok_wvformat);
-                                wvformat = ok_wvformat;
+                                ok_wvformat
                             }
                             None => {
                                 let msg = format!("WAVEX check: Opening device {}: unsupported modified format: {:?}", dev_name, wvformat);
@@ -744,7 +749,7 @@ pub fn device_open(
                 }
             }
         }
-    }
+    };
     match audio_client.initialize_client(
         &wvformat,
         dev_period,
