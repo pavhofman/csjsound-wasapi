@@ -35,8 +35,6 @@ pub struct Format {
     frame_bytes: i32,
     channels: i32,
     rate: i32,
-    is_signed: bool,
-    is_big_endian: bool,
 }
 
 const ADD_FORMAT_METHOD: &'static str = "addFormat";
@@ -152,8 +150,8 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
                                                    JValue::Int(format.channels),
                                                    JValue::Int(format.rate),
                                                    JValue::Int(0), // fixed PCM
-                                                   JValue::from(format.is_signed),
-                                                   JValue::from(format.is_big_endian),
+                                                   JValue::from(true),
+                                                   JValue::from(false),
                                                ]) {
             Ok(_) => {}
             Err(err) => {

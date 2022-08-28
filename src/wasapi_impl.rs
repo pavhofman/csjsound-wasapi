@@ -146,8 +146,6 @@ impl From<WaveFormat> for Format {
             frame_bytes: ((wvfmt.get_bitspersample() / 8) as i32) * wvfmt.get_nchannels() as i32,
             channels: wvfmt.get_nchannels() as i32,
             rate: wvfmt.get_samplespersec() as i32,
-            is_signed: true,
-            is_big_endian: false,
         }
     }
 }
@@ -249,8 +247,6 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
             frame_bytes: NOT_SPECIFIED,
             channels: NOT_SPECIFIED,
             rate: NOT_SPECIFIED,
-            is_signed: true,
-            is_big_endian: false,
         };
         formats.push(format);
     }
