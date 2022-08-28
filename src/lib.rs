@@ -101,7 +101,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
     } else {
         // no limits, all combinations accepted
         debug!("Received no max rate and max channels limits, will test all combinations");
-        Box::new(|rate: usize, channels: usize| true)
+        Box::new(|_rate: usize, _channels: usize| true)
     };
 
     fill_format_variants(rates, channels, accepted_combination);
