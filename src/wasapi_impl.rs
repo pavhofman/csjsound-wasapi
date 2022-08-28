@@ -4,11 +4,12 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError, unbounded};
 use log::{debug, error, trace, warn};
-use wasapi::{AudioClient, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_sta, ShareMode, WaveFormat};
+use wasapi::{AudioClient, BufferFlags, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_sta, ShareMode, WaveFormat};
 use windows::core::PCWSTR;
 use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 
@@ -333,6 +334,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
                     handle,
                     frame_bytes,
                     client_buffer_frames,
+                    rate,
                     sync,
                 )
             };
@@ -734,8 +736,9 @@ fn playback_loop(
     });
     let callbacks_rc = Rc::new(callbacks);
     let callbacks_weak = Rc::downgrade(&callbacks_rc);
-    let sessioncontrol = audio_client.get_audiosessioncontrol()?;
     let clock = audio_client.get_audioclock()?;
+
+    let sessioncontrol = audio_client.get_audiosessioncontrol()?;
     sessioncontrol.register_session_notification(callbacks_weak)?;
 
     // let mut waited_millis = 0;
@@ -879,6 +882,7 @@ fn capture_loop(
     handle: Handle,
     frame_bytes: usize,
     chunk_frames: usize,
+    samplerate: usize,
     sync: CaptSyncData,
 ) -> Res<()> {
     let mut chunk_nbr: u64 = 0;
@@ -895,6 +899,9 @@ fn capture_loop(
 
     let callbacks_rc = Rc::new(callbacks);
     let callbacks_weak = Rc::downgrade(&callbacks_rc);
+    let mut pos = 0;
+    let mut device_prevtime = 0.0;
+    let clock = audio_client.get_audioclock()?;
 
     let sessioncontrol = audio_client.get_audiosessioncontrol()?;
     sessioncontrol.register_session_notification(callbacks_weak)?;
@@ -915,6 +922,10 @@ fn capture_loop(
     } else {
         warn!("Failed to raise capture thread priority");
     }
+    let device_freq = clock.get_frequency()? as f64;
+    let max_duration = Duration::from_millis(100);
+    let sleep_duration = Duration::from_millis(2);
+
     let capture_client = audio_client.get_audiocaptureclient()?;
     //trace!("Starting capture stream");
     audio_client.stop_stream()?;
@@ -922,6 +933,8 @@ fn capture_loop(
     let mut now = Instant::now();
     loop {
         trace!("capturing");
+
+        // handling signals
         if sync.start_signal.load(Ordering::Relaxed) {
             debug!("Starting capture device");
             if !running {
@@ -954,7 +967,7 @@ fn capture_loop(
         if handle.wait_for_event(timeout).is_err() {
             trace!("Timeout {}ms on capture event", timeout);
             if !inactive {
-                warn!("No capture data received, pausing stream");
+                warn!("No capture data received within timeout of {}ms", timeout);
                 inactive = true;
             }
             // no data received, continue the loop
@@ -965,12 +978,35 @@ fn capture_loop(
 
         // no event timeout, should have received data
         if inactive {
-            trace!("Capture data received, resuming stream");
+            trace!("Capture data received");
             inactive = false;
         }
-        let available_frames = audio_client.get_bufferframecount()?;
 
+        let available_frames = audio_client.get_available_space_in_frames()?;
         trace!("Available frames from capture dev: {}", available_frames);
+        let device_time = pos as f64 / device_freq;
+        //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
+        //println!("{}",prev_inst.elapsed().as_micros());
+        trace!(
+            "CAPT: Device time grew by {} s",
+            device_time - device_prevtime
+        );
+        if available_frames > 0 && (device_time - device_prevtime) > 1.5 * (available_frames as f64 / samplerate as f64) as f64 {
+            warn!(
+                "CAPT: Missing event! Interval {} s, expected {} s",
+                device_time - device_prevtime,
+                available_frames as f64 / samplerate as f64
+            );
+            if running {
+                // warn!("CAPT: Resetting stream");
+                // audio_client.stop_stream()?;
+                // audio_client.reset_stream()?;
+                // audio_client.start_stream()?;
+                running = true;
+            }
+        }
+        device_prevtime = device_time;
+
 
         // If no available frames, just skip the rest of this loop iteration
         if available_frames == 0 {
@@ -1000,7 +1036,22 @@ fn capture_loop(
         if data.len() != chunk_bytes {
             data.resize(chunk_bytes, 0);
         }
-        let (frames_read, flags) = capture_client.read_from_device(frame_bytes as usize, &mut data[0..chunk_bytes])?;
+        let mut frames_read: u32 = 0;
+        let mut flags: BufferFlags = BufferFlags::new(0);
+        let mut duration = Duration::from_millis(0);
+        while frames_read == 0 {
+             (frames_read, flags) = capture_client.read_from_device(frame_bytes as usize, &mut data[0..chunk_bytes])?;
+            if frames_read == 0 {
+                if duration > max_duration {
+                    warn!("CAPT: reading from device took longer than {:?}, aborting", max_duration);
+                    break;
+                } else {
+                    debug!("CAPT: read 0 frames, will try again after sleep {:?}", sleep_duration);
+                    sleep(sleep_duration);
+                    duration += sleep_duration;
+                }
+            }
+        }
         if frames_read != available_frames {
             warn!("Capture: expected {} frames, got {} in EXCLUSIVE mode!",available_frames, frames_read);
         }
@@ -1009,6 +1060,13 @@ fn capture_loop(
             debug!("Captured a buffer marked as silent");
             // zeroing all captured samples
             data.iter_mut().take(chunk_bytes).for_each(|val| *val = 0);
+        }
+
+        if flags.data_discontinuity {
+           warn!("Capture device reported a buffer overrun");
+        }
+        if flags.timestamp_error {
+           warn!("Capture device reported a timestamp error");
         }
 
         trace!("Sending chunk to main queue containing {} items", sync.tx_dev.len());
@@ -1025,5 +1083,6 @@ fn capture_loop(
             }
         }
         chunk_nbr += 1;
+        pos = clock.get_position()?.0;
     }
 }
