@@ -3,26 +3,21 @@ use std::cmp;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError, unbounded};
-use lazy_static::lazy_static;
 use log::{debug, error, trace, warn};
-use wasapi::{AudioClient, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_sta, SampleType, ShareMode, WaveFormat};
+use wasapi::{AudioClient, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_sta, ShareMode, WaveFormat};
 use windows::core::PCWSTR;
 use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 
-use crate::{Format, MixerDesc, Res};
+use crate::{MixerDesc, Res};
+use crate::formats::{Format, get_possible_formats, WV_FMTS_BY_FORMAT};
 
-lazy_static! {
-    static ref WV_FMTS: Mutex<Vec<WaveFormat>> = Mutex::new(Vec::new());
-}
 
 // defined in JAVA
 const NOT_SPECIFIED: i32 = -1;
-const WAVEX_TYPE: u16 = 1;  // PCM type
 
 //#[derive(Debug)]
 pub struct RuntimeData {
@@ -103,53 +98,6 @@ enum DeviceState {
 }
 
 
-pub fn fill_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec<usize>, accepted_combination: T)
-    where T: Fn(usize, usize) -> bool {
-    let valid_store_bits_variants = vec!((16, 16), (24, 24), (24, 32), (32, 32));
-    for rate in rate_variants {
-        for channels in &channels_variants {
-            // upper limit on rate x channels combination
-            if accepted_combination(rate, *channels) {
-                for (validbits, storebits) in &valid_store_bits_variants {
-                    //WAVEXTENSIBLE
-                    let mut wvformat = WaveFormat::new(
-                        *storebits,
-                        *validbits,
-                        &SampleType::Int,
-                        rate,
-                        *channels,
-                        None,
-                    );
-                    WV_FMTS.lock().unwrap().push(wvformat.clone());
-
-                    // adding format with zero channel mask (some capture devices require that)
-                    let mut zero_chmask_format = wvformat.clone();
-                    zero_chmask_format.wave_fmt.dwChannelMask = 0;
-                    WV_FMTS.lock().unwrap().push(zero_chmask_format);
-
-                    // adding WAVEX format for legacy formats (see https://docs.microsoft.com/en-us/windows/win32/coreaudio/device-formats#specifying-the-device-format)
-                    if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
-                        wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
-                        wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
-                        WV_FMTS.lock().unwrap().push(wvformat);
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl From<WaveFormat> for Format {
-    fn from(wvfmt: WaveFormat) -> Self {
-        Format {
-            validbits: wvfmt.get_validbitspersample() as i32,
-            frame_bytes: ((wvfmt.get_bitspersample() / 8) as i32) * wvfmt.get_nchannels() as i32,
-            channels: wvfmt.get_nchannels() as i32,
-            rate: wvfmt.get_samplespersec() as i32,
-        }
-    }
-}
-
 pub fn do_initialize_wasapi() -> Res<()> {
     initialize_sta()?;
     Ok(())
@@ -229,15 +177,21 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
     let dev_name = dev.get_friendlyname()?;
     let client = dev.get_iaudioclient()?;
     let mut supported_validbits: HashSet<i32> = HashSet::new();
-    for wvformat in &*WV_FMTS.lock().unwrap() {
-        // wvformat is wavextensible from wasapi-rs
-        match get_supported_format(&client, &dev_name, wvformat) {
-            Some(ok_wvformat) => {
-                let ok_format = Format::from(ok_wvformat);
-                supported_validbits.insert(ok_format.validbits);
-                formats.push((ok_format).clone());
+    for (_format, wvformats) in &*WV_FMTS_BY_FORMAT.lock().unwrap() {
+        //adding only first supported wvformat for the given format
+
+        for wvformat in wvformats {
+            // wvformat is wavextensible from wasapi-rs
+            match get_supported_format(&client, &dev_name, wvformat) {
+                Some(ok_wvformat) => {
+                    let ok_format = Format::from(ok_wvformat);
+                    supported_validbits.insert(ok_format.validbits);
+                    formats.push((ok_format).clone());
+                    // no more wvformat checks for this _format
+                    break;
+                }
+                None => {}
             }
-            None => {}
         }
     }
     // adding formats with NOT_SPECIFIED channels and rate because only predefined values are checked
@@ -703,47 +657,15 @@ pub fn device_open(
     let sharemode = ShareMode::Exclusive;
     let (device, dev_name, mut audio_client) = get_device_details(&device_id, &dir)?;
 
-    let mut wvformat = WaveFormat::new(frame_bytes * 8 / channels,
-                                       validbits,
-                                       &SampleType::Int,
-                                       rate,
-                                       channels,
-                                       None);
-    wvformat = match get_supported_format(&audio_client, &dev_name, &wvformat) {
+    let wvformats = get_possible_formats(8 * frame_bytes / channels, validbits, rate, channels);
+    let wvformat = match find_supported_format(&dev_name, &audio_client, wvformats) {
         Some(ok_wvformat) => {
-            debug!("%s: Opening device {}: supports requested format {:?}", dev_name, ok_wvformat);
+            debug!("%s: Opening device {}: will use format {:?}", dev_name, ok_wvformat);
             ok_wvformat
         }
         None => {
-            let msg = format!("Opening device {}: unsupported requested format: {:?}", dev_name, wvformat);
-            // trying zero chMask
-            wvformat.wave_fmt.dwChannelMask = 0;
-            match get_supported_format(&audio_client, &dev_name, &wvformat) {
-                Some(ok_wvformat) => {
-                    debug!("%s: dwChannelMask=0 check: Opening device {}: supports modified format {:?}", dev_name, ok_wvformat);
-                    ok_wvformat
-                }
-                None => {
-                    // trying wavex
-                    if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
-                        wvformat.wave_fmt.Format.wFormatTag = WAVEX_TYPE;  // PCM
-                        wvformat.wave_fmt.Format.cbSize = 0 as u16;  // no additional bytes
-                        match get_supported_format(&audio_client, &dev_name, &wvformat) {
-                            Some(ok_wvformat) => {
-                                debug!("%s: WAVEX check: Opening device {}: supports modified format {:?}", dev_name, ok_wvformat);
-                                ok_wvformat
-                            }
-                            None => {
-                                let msg = format!("WAVEX check: Opening device {}: unsupported modified format: {:?}", dev_name, wvformat);
-                                return Err(msg.into());
-                            }
-                        }
-                    } else {
-                        let msg = format!("dwChannelMask=0 check: Opening device {}: unsupported modified format: {:?}", dev_name, wvformat);
-                        return Err(msg.into());
-                    }
-                }
-            }
+            let msg = format!("Opening device {}: no supported format found", dev_name);
+            return Err(msg.into());
         }
     };
     match audio_client.initialize_client(
@@ -763,6 +685,21 @@ pub fn device_open(
     let handle = audio_client.set_get_eventhandle()?;
     debug!("Opened Wasapi device {} in {}", dev_name, dir);
     Ok((device, audio_client, handle))
+}
+
+fn find_supported_format(dev_name: &str, audio_client: &AudioClient, wvformats: Vec<WaveFormat>) -> Option<WaveFormat> {
+    for wvformat in wvformats {
+        match get_supported_format(audio_client, dev_name, &wvformat) {
+            Some(ok_wvformat) => {
+                debug!("Opening device {}: supports format {:?}", dev_name, ok_wvformat);
+                return Some(ok_wvformat);
+            }
+            None => {
+                debug!("Opening device {}: unsupported format: {:?}", dev_name, wvformat);
+            }
+        }
+    }
+    None
 }
 
 fn get_device_details(device_id: &str, dir: &Direction) -> Res<(Device, String, AudioClient)> {

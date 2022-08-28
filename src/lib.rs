@@ -17,8 +17,10 @@ use simplelog::{ConfigBuilder, format_description, WriteLogger};
 use wasapi::Direction;
 
 use wasapi_impl::*;
+use crate::formats::init_format_variants;
 
 mod wasapi_impl;
+mod formats;
 
 pub type Res<T> = Result<T, Box<dyn Error>>;
 
@@ -27,14 +29,6 @@ pub struct MixerDesc {
     max_lines: usize,
     name: String,
     description: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Format {
-    validbits: i32,
-    frame_bytes: i32,
-    channels: i32,
-    rate: i32,
 }
 
 const ADD_FORMAT_METHOD: &'static str = "addFormat";
@@ -102,7 +96,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
         Box::new(|_rate: usize, _channels: usize| true)
     };
 
-    fill_format_variants(rates, channels, accepted_combination);
+    init_format_variants(rates, channels, accepted_combination);
 
     return match do_initialize_wasapi() {
         Ok(_) => {
