@@ -294,7 +294,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
                         (_device, audio_client, handle, client_buffer_frames)
                     }
                     Err(err) => {
-                        let msg = format!("Playback error: {}", err);
+                        let msg = format!("PB: error: {}", err);
                         tx_state_dev.send(DeviceState::Error(msg)).unwrap_or(());
                         return;
                     }
@@ -432,7 +432,7 @@ pub fn do_stop(rtd: &RuntimeData, dir: &Direction) -> Res<()> {
 }
 
 pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_len: usize) -> Res<usize> {
-    trace!("do_write: java_buffer {} bytes, offset {} bytes, writing {} bytes", java_buffer.len(), offset, data_len);
+    trace!("PB: do_write: java_buffer {} bytes, offset {} bytes, writing {} bytes", java_buffer.len(), offset, data_len);
 
     let chunk_bytes = rtd.chunk_frames * rtd.frame_bytes;
 
@@ -445,7 +445,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
     // if leftovers + data_to_write do not fill whole chunk
     if leftovers_pos + data_len < chunk_bytes {
         // just appending whole data_to_write to leftovers
-        trace!("write: leftovers_pos {} + data_len {} < chunk_bytes {}: only copying to leftovers",
+        trace!("PB: write: leftovers_pos {} + data_len {} < chunk_bytes {}: only copying to leftovers",
         leftovers_pos, data_len, chunk_bytes);
         rtd.leftovers[leftovers_pos..leftovers_pos + data_len].copy_from_slice(&data_to_write);
         rtd.leftovers_pos.store(leftovers_pos + data_len, Ordering::Relaxed);
@@ -480,7 +480,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
         // allocating new chunk
         let mut chunk: Vec<u8> = Vec::with_capacity(chunk_bytes);
         unsafe { chunk.set_len(chunk_bytes); }
-        trace!("chunk length: {}, chunk_bytes: {}", chunk.len(), chunk_bytes);
+        trace!("PB: chunk length: {}, chunk_bytes: {}", chunk.len(), chunk_bytes);
 
         chunk.copy_from_slice(&data_to_write[0..chunk_bytes]);
         match rtd.play_tx_dev.as_ref().unwrap().send(chunk) {
@@ -494,7 +494,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
     }
     if data_to_write.len() > 0 {
         // storing the leftovers
-        trace!("leftovers length: {}, data_to_write length: {}", rtd.leftovers.len(), data_to_write.len());
+        trace!("PB: leftovers length: {}, data_to_write length: {}", rtd.leftovers.len(), data_to_write.len());
         leftovers_pos = data_to_write.len();
         rtd.leftovers[0..leftovers_pos].copy_from_slice(data_to_write);
     }
@@ -503,7 +503,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
 }
 
 pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, data_len: usize) -> Res<usize> {
-    trace!("do_read: input_buffer {} bytes, offset {} bytes, reading {} bytes", input_buffer.len(), offset, data_len);
+    trace!("CAPT: do_read: input_buffer {} bytes, offset {} bytes, reading {} bytes", input_buffer.len(), offset, data_len);
     let chunk_bytes = rtd.chunk_frames * rtd.frame_bytes;
     let mut read_len = 0;
     let mut expected_chunk_nbr = rtd.capt_last_chunk_nbr;
@@ -523,10 +523,10 @@ pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, da
         // fully blocking
         match rtd.capt_rx_dev.as_ref().unwrap().recv() {
             Ok((chunk_nbr, data)) => {
-                trace!("got chunk nbr {}, long {} bytes", chunk_nbr, data.len());
+                trace!("CAPT: got chunk nbr {}, long {} bytes", chunk_nbr, data.len());
                 expected_chunk_nbr += 1;
                 if chunk_nbr > expected_chunk_nbr {
-                    warn!("Samples were dropped, missing {} buffers", chunk_nbr - expected_chunk_nbr);
+                    warn!("CAPT: Samples were dropped, missing {} buffers", chunk_nbr - expected_chunk_nbr);
                     expected_chunk_nbr = chunk_nbr;
                 }
                 if read_len + chunk_bytes <= data_len {
@@ -727,7 +727,7 @@ fn playback_loop(
     let tx_cb = sync.tx_cb;
     let mut callbacks = wasapi::EventCallbacks::new();
     callbacks.set_disconnected_callback(move |reason| {
-        debug!("Disconnected, reason: {:?}", reason);
+        debug!("PB: Disconnected, reason: {:?}", reason);
         let simplereason = match reason {
             DisconnectReason::FormatChanged => Disconnected::FormatChange,
             _ => Disconnected::Error,
@@ -755,9 +755,9 @@ fn playback_loop(
         let _res = AvSetMmThreadCharacteristicsW(PCWSTR::from(&"Pro Audio".into()), &mut task_idx);
     }
     if task_idx > 0 {
-        trace!("Playback thread raised priority, task index: {}", task_idx);
+        trace!("PB: thread raised priority, task index: {}", task_idx);
     } else {
-        warn!("Failed to raise playback thread priority");
+        warn!("PB: Failed to raise thread priority");
     }
 
     audio_client.stop_stream()?;
@@ -775,12 +775,12 @@ fn playback_loop(
         //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
         //println!("{}",prev_inst.elapsed().as_micros());
         trace!(
-            "Device time grew by {} s",
+            "PB: Device time grew by {} s",
             device_time - device_prevtime
         );
         if buffer_free_frames > 0 && (device_time - device_prevtime) > 1.5 * (buffer_free_frames as f64 / samplerate as f64) as f64 {
             warn!(
-                "Missing event! Resetting stream. Interval {} s, expected {} s",
+                "PB: Missing event! Resetting stream. Interval {} s, expected {} s",
                 device_time - device_prevtime,
                 buffer_free_frames as f64 / samplerate as f64
             );
@@ -794,7 +794,7 @@ fn playback_loop(
         device_prevtime = device_time;
 
         if sync.start_signal.load(Ordering::Relaxed) {
-            debug!("Starting inner capture loop");
+            debug!("PB: Starting inner loop");
             if !running {
                 audio_client.start_stream()?;
                 running = true;
@@ -803,7 +803,7 @@ fn playback_loop(
             // staying in the loop
         }
         if sync.stop_signal.load(Ordering::Relaxed) {
-            debug!("Stopping inner capture loop");
+            debug!("PB: Stopping inner loop");
             if running {
                 audio_client.stop_stream()?;
                 running = false;
@@ -812,7 +812,7 @@ fn playback_loop(
             // staying in the loop
         }
         if sync.exit_signal.load(Ordering::Relaxed) {
-            debug!("Exiting inner playback loop");
+            debug!("PB: Exiting inner loop");
             audio_client.stop_stream()?;
             running = false;
             sync.exit_signal.store(false, Ordering::Relaxed);
@@ -824,16 +824,16 @@ fn playback_loop(
         // reading from data channel with timeout 5ms
         let chunk = match sync.rx_dev.recv_timeout(Duration::from_millis(5)) {
             Ok(chunk) => {
-                trace!("playback - got chunk");
+                trace!("PB: got chunk");
                 if !running {
-                    warn!("playback - received chunk in stopped device, starting automatically!");
+                    warn!("PB: received chunk in stopped device, starting automatically!");
                     audio_client.start_stream()?;
                     running = true;
                 }
                 Some(chunk)
             }
             Err(RecvTimeoutError::Timeout) => {
-                trace!("playback - chunk receive timed out, no data");
+                trace!("PB: chunk receive timed out, no data");
                 // sleeping is provided by recv_timeout(timeout)
                 if running {
                     audio_client.stop_stream()?;
@@ -842,12 +842,13 @@ fn playback_loop(
                 None
             }
             Err(RecvTimeoutError::Disconnected) => {
-                error!("Playback data channel is closed");
+                let msg = "PB: data channel is closed";
+                error!("{}", msg);
                 if running {
                     audio_client.stop_stream()?;
                     running = false;
                 }
-                return Err(DeviceError::new("Playback data channel is closed").into());
+                return Err(DeviceError::new(msg).into());
             }
         };
         if chunk.is_some() {
@@ -861,15 +862,15 @@ fn playback_loop(
             )?;
             // for reporting position
             sync.wasapi_bufferfill_bytes.store(chunk_frames * frame_bytes, Ordering::Relaxed);
-            trace!("write ok");
+            trace!("PB: write ok");
             let now = Instant::now();
             if handle.wait_for_event(1000).is_err() {
-                error!("Error on playback, stopping stream");
+                error!("PB: Error on playback, stopping stream");
                 audio_client.stop_stream()?;
                 running = false;
-                return Err(DeviceError::new("Error on playback").into());
+                return Err(DeviceError::new("PB: Error on playback").into());
             }
-            trace!("playback waited for event: {:?}", now.elapsed());
+            trace!("PB: waited for event: {:?}", now.elapsed());
             // buffer empty
             sync.wasapi_bufferfill_bytes.store(0, Ordering::Relaxed);
         }
@@ -889,7 +890,7 @@ fn capture_loop(
 
     let mut callbacks = wasapi::EventCallbacks::new();
     callbacks.set_disconnected_callback(move |reason| {
-        debug!("Capture disconnected, reason: {:?}", reason);
+        debug!("CAPT: disconnected, reason: {:?}", reason);
         let simplereason = match reason {
             DisconnectReason::FormatChanged => Disconnected::FormatChange,
             _ => Disconnected::Error,
@@ -918,9 +919,9 @@ fn capture_loop(
         let _res = AvSetMmThreadCharacteristicsW(PCWSTR::from(&"Pro Audio".into()), &mut task_idx);
     }
     if task_idx > 0 {
-        trace!("Capture thread raised priority, task index: {}", task_idx);
+        trace!("CAPT: thread raised priority, task index: {}", task_idx);
     } else {
-        warn!("Failed to raise capture thread priority");
+        warn!("CAPT: Failed to raise thread priority");
     }
     let device_freq = clock.get_frequency()? as f64;
     let max_duration = Duration::from_millis(100);
@@ -932,11 +933,11 @@ fn capture_loop(
     //trace!("Started capture stream");
     let mut now = Instant::now();
     loop {
-        trace!("capturing");
+        trace!("CAPT: capturing");
 
         // handling signals
         if sync.start_signal.load(Ordering::Relaxed) {
-            debug!("Starting capture device");
+            debug!("CAPT: Starting device");
             if !running {
                 audio_client.start_stream()?;
                 running = true;
@@ -945,7 +946,7 @@ fn capture_loop(
             // staying in the loop
         }
         if sync.stop_signal.load(Ordering::Relaxed) {
-            debug!("Stopping capture device");
+            debug!("CAPT: Stopping device");
             if running {
                 audio_client.stop_stream()?;
                 running = false;
@@ -954,36 +955,36 @@ fn capture_loop(
             // staying in the loop
         }
         if sync.exit_signal.load(Ordering::Relaxed) {
-            debug!("Exiting inner capture loop");
+            debug!("CAPT: Exiting inner loop");
             audio_client.stop_stream()?;
             running = false;
             sync.exit_signal.store(false, Ordering::Relaxed);
             return Ok(());
         }
 
-        trace!("Capture processed samples for {:?}", now.elapsed());
+        trace!("CAPT: processed samples for {:?}", now.elapsed());
         now = Instant::now();
         let timeout = 250;
         if handle.wait_for_event(timeout).is_err() {
-            trace!("Timeout {}ms on capture event", timeout);
+            trace!("CAPT: Timeout {}ms on event", timeout);
             if !inactive {
-                warn!("No capture data received within timeout of {}ms", timeout);
+                warn!("CAPT: No data received within timeout of {}ms", timeout);
                 inactive = true;
             }
             // no data received, continue the loop
             continue;
         }
-        trace!("Capture waited for event: {:?}", now.elapsed());
+        trace!("CAPT: waited for event: {:?}", now.elapsed());
         now = Instant::now();
 
         // no event timeout, should have received data
         if inactive {
-            trace!("Capture data received");
+            trace!("CAPT: data received");
             inactive = false;
         }
 
         let available_frames = audio_client.get_available_space_in_frames()?;
-        trace!("Available frames from capture dev: {}", available_frames);
+        trace!("CAPT: Available frames from dev: {}", available_frames);
         let device_time = pos as f64 / device_freq;
         //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
         //println!("{}",prev_inst.elapsed().as_micros());
@@ -1014,8 +1015,8 @@ fn capture_loop(
         }
 
         if available_frames as usize != chunk_frames {
-            error!("Capture: available_frames {} != chunk_frames {} in EXCLUSIVE mode, failure in wasapi!", available_frames, chunk_frames);
-            return Err(DeviceError::new("Misbehaving EXCLUSIVE mode").into());
+            error!("CAPT: available_frames {} != chunk_frames {} in EXCLUSIVE mode, failure in wasapi!", available_frames, chunk_frames);
+            return Err(DeviceError::new("CAPT: Misbehaving EXCLUSIVE mode").into());
         }
 
         // empty buffers are received from the main thread to avoid costly allocation in the inner loop
@@ -1025,7 +1026,7 @@ fn capture_loop(
                 buf
             }
             None => {
-                trace!("Getting preallocated chunk from return queue containing {} items", sync.rx_prealloc.len());
+                trace!("CAPT: Getting preallocated chunk from return queue containing {} items", sync.rx_prealloc.len());
                 sync.rx_prealloc.recv().unwrap()
             }
         };
@@ -1040,7 +1041,7 @@ fn capture_loop(
         let mut flags: BufferFlags = BufferFlags::new(0);
         let mut duration = Duration::from_millis(0);
         while frames_read == 0 {
-             (frames_read, flags) = capture_client.read_from_device(frame_bytes as usize, &mut data[0..chunk_bytes])?;
+            (frames_read, flags) = capture_client.read_from_device(frame_bytes as usize, &mut data[0..chunk_bytes])?;
             if frames_read == 0 {
                 if duration > max_duration {
                     warn!("CAPT: reading from device took longer than {:?}, aborting", max_duration);
@@ -1053,33 +1054,33 @@ fn capture_loop(
             }
         }
         if frames_read != available_frames {
-            warn!("Capture: expected {} frames, got {} in EXCLUSIVE mode!",available_frames, frames_read);
+            warn!("CAPT: expected {} frames, got {} in EXCLUSIVE mode!",available_frames, frames_read);
         }
 
         if flags.silent {
-            debug!("Captured a buffer marked as silent");
+            debug!("CAPT: buffer marked as silent");
             // zeroing all captured samples
             data.iter_mut().take(chunk_bytes).for_each(|val| *val = 0);
         }
 
         if flags.data_discontinuity {
-           warn!("Capture device reported a buffer overrun");
+            warn!("CAPT: device reported a buffer overrun");
         }
         if flags.timestamp_error {
-           warn!("Capture device reported a timestamp error");
+            warn!("CAPT: device reported a timestamp error");
         }
 
-        trace!("Sending chunk to main queue containing {} items", sync.tx_dev.len());
+        trace!("CAPT: Sending chunk to main queue containing {} items", sync.tx_dev.len());
         match sync.tx_dev.try_send((chunk_nbr, data)) {
             Ok(()) => {}
             Err(TrySendError::Full((nbr, data))) => {
-                debug!("Outer side not consuming chunks, dropping captured chunk {}", nbr);
+                debug!("CAPT: Outer side not consuming chunks, dropping captured chunk {}", nbr);
                 saved_buffer = Some(data);
             }
             Err(TrySendError::Disconnected(_)) => {
-                error!("Capture: Error sending , channel from inner thread to main disconnected");
+                error!("CAPT: Error sending , channel from inner thread to main disconnected");
                 audio_client.stop_stream()?;
-                return Err(DeviceError::new("Capture: Error sending, channel from inner thread to main disconnected").into());
+                return Err(DeviceError::new("CAPT: Error sending, channel from inner thread to main disconnected").into());
             }
         }
         chunk_nbr += 1;
