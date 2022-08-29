@@ -978,6 +978,7 @@ fn capture_loop(
                 inactive = true;
             }
             // no data received, continue the loop
+            now = Instant::now();
             continue;
         }
         trace!("CAPT: waited for event: {:?}", now.elapsed());
