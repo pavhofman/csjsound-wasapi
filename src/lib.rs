@@ -5,18 +5,19 @@ extern crate core;
 use core::slice;
 use std::error::Error;
 use std::fs::File;
-use std::io;
 
 use ::function_name::named;
+use fast_log::appender::{Command, FastLogRecord, RecordFormat};
+use fast_log::Config;
 use jni::JNIEnv;
 use jni::objects::{AutoArray, AutoPrimitiveArray, JClass, JObject, JString, JValue, ReleaseMode};
 use jni::signature::TypeSignature;
 use jni::sys::{jboolean, jbyteArray, jint, jintArray, jlong, jobject};
 use log::{debug, error, info, LevelFilter, trace};
-use simplelog::{ConfigBuilder, format_description, WriteLogger};
 use wasapi::Direction;
 
 use wasapi_impl::*;
+
 use crate::formats::init_format_variants;
 
 mod wasapi_impl;
@@ -35,6 +36,40 @@ const ADD_FORMAT_METHOD: &'static str = "addFormat";
 const ADD_FORMAT_SIGNATURE: &'static str = "(Ljava/util/Vector;IIIIIZZ)V";
 
 
+pub struct LogFormat {
+    pub display_line_level: LevelFilter,
+}
+
+impl RecordFormat for LogFormat {
+    fn do_format(&self, arg: &mut FastLogRecord) -> String {
+        match &arg.command {
+            Command::CommandRecord => {
+                let data;
+                let now = fastdate::Time::from(fastdate::DateTime::now());
+                if arg.level.to_level_filter() >= self.display_line_level {
+                    data = format!(
+                        "{} {} [{}:{}] {}\n",
+                        &now,
+                        arg.level,
+                        arg.file,
+                        arg.line.unwrap_or_default(),
+                        arg.args,
+                    );
+                } else {
+                    data = format!(
+                        "{} {} {} - {}\n",
+                        &now, arg.level, arg.module_path, arg.args
+                    );
+                }
+                return data;
+            }
+            Command::CommandExit => {}
+            Command::CommandFlush(_) => {}
+        }
+        return String::new();
+    }
+}
+
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
@@ -50,34 +85,25 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
         4 => LevelFilter::Trace,
         _ => LevelFilter::Error,
     };
-    let format = format_description!("[hour]:[minute]:[second].[subsecond]");
-    let config = ConfigBuilder::new()
-        .set_time_format_custom(format)
-        .build();
 
-    match log_target_str.as_str() {
-        "stdout" => {
-            let _ = WriteLogger::init(log_level, config, io::stdout());
-        }
-        "stderr" => {
-            let _ = WriteLogger::init(log_level, config, io::stderr());
-        }
+    let mut config = Config::new().level(log_level).format(LogFormat { display_line_level: LevelFilter::Off });
+
+    config = match log_target_str.as_str() {
+        "stdout" => { config.console() }
+        "stderr" => { /* for now now stderr support */ config.console() }
         other => {
-            let file = match File::create(other) {
+            // checking if the log file can be created
+            let _file = match File::create(other) {
                 Ok(file) => { file }
                 Err(err) => {
                     error!("{}: Failed to create log file {}: {}", function_name!(), other, err);
                     return 0 as jboolean;
                 }
             };
-            let _ = WriteLogger::init(log_level, config, file);
+            config.file(other)
         }
-    }
-    // let _ = CombinedLogger::init(vec![
-    //     //SimpleLogger::new(level, config.clone()),
-    //     //WriteLogger::new(level, config, targetWritable),
-    //     ,
-    // ]);
+    };
+    fast_log::init(config).unwrap();
 
     trace!("{}", function_name!());
 
@@ -159,9 +185,9 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 
 /*
 JNIEXPORT jlong JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nOpen
-	(JNIEnv* env, jclass clazz, jstring deviceID, jboolean isSource,
-	jint enc, jint rate, jint sampleSignBits, jint frameBytes, jint channels,
-	jboolean isSigned, jboolean isBigEndian, jint bufferBytes)
+    (JNIEnv* env, jclass clazz, jstring deviceID, jboolean isSource,
+    jint enc, jint rate, jint sampleSignBits, jint frameBytes, jint channels,
+    jboolean isSigned, jboolean isBigEndian, jint bufferBytes)
  */
 #[named]
 #[no_mangle]
@@ -187,7 +213,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
 
 /*
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStart
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
 #[named]
 #[no_mangle]
@@ -206,7 +232,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStart
 
 /*
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStop
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
 #[named]
 #[no_mangle]
@@ -225,7 +251,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStop
 
 /*
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nClose
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
 #[named]
 #[no_mangle]
@@ -248,7 +274,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nWrite
-	(JNIEnv *env, jclass clazz, jlong nativePtr, jbyteArray jData, jint offset, jint len)
+    (JNIEnv *env, jclass clazz, jlong nativePtr, jbyteArray jData, jint offset, jint len)
  */
 #[named]
 #[no_mangle]
@@ -273,7 +299,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nWrite
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nRead
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jbyteArray jData, jint offset, jint len)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jbyteArray jData, jint offset, jint len)
  */
 #[named]
 #[no_mangle]
@@ -297,7 +323,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nRead
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferBytes
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
 #[named]
 #[no_mangle]
@@ -320,7 +346,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferB
 
 /*
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nDrain
-	(JNIEnv* env, jclass clazz, jlong nativePtr)
+    (JNIEnv* env, jclass clazz, jlong nativePtr)
  */
 #[named]
 #[no_mangle]
@@ -334,7 +360,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nDrain
 
 /*
 JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nFlush
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
 #[named]
 #[no_mangle]
@@ -348,7 +374,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nFlush
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBytes
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource)
  */
 #[named]
 #[no_mangle]
@@ -372,7 +398,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBy
 
 /*
 JNIEXPORT jlong JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
-	(JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource, jlong javaBytePos)
+    (JNIEnv* env, jclass clazz, jlong nativePtr, jboolean isSource, jlong javaBytePos)
  */
 #[named]
 #[no_mangle]
@@ -393,7 +419,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_nGetMixerCnt
-	(JNIEnv *env, jclass clazz)
+    (JNIEnv *env, jclass clazz)
  */
 #[named]
 #[no_mangle]
@@ -416,7 +442,7 @@ const MIXER_INFO_SIGNATURE: &'static str = "(ILjava/lang/String;ILjava/lang/Stri
 
 /*
 JNIEXPORT jobject JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_nCreateMixerInfo
-	(JNIEnv *env, jclass clazz, jint idx)
+    (JNIEnv *env, jclass clazz, jint idx)
  */
 #[named]
 #[no_mangle]
