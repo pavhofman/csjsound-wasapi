@@ -929,6 +929,13 @@ fn capture_loop(
     let capture_client = audio_client.get_audiocaptureclient()?;
     //trace!("Starting capture stream");
     audio_client.stop_stream()?;
+    let available_frames = audio_client.get_available_space_in_frames()?;
+    trace!("CAPT: Available frames from dev: {}", available_frames);
+    if available_frames as usize != chunk_frames {
+        error!("CAPT: available_frames {} != chunk_frames {} in EXCLUSIVE mode, failure in wasapi!", available_frames, chunk_frames);
+        return Err(DeviceError::new("CAPT: Misbehaving EXCLUSIVE mode").into());
+    }
+
     //trace!("Started capture stream");
     let mut now = Instant::now();
     loop {
@@ -980,18 +987,6 @@ fn capture_loop(
         if inactive {
             trace!("CAPT: data received");
             inactive = false;
-        }
-
-        let available_frames = audio_client.get_available_space_in_frames()?;
-        trace!("CAPT: Available frames from dev: {}", available_frames);
-        // If no available frames, just skip the rest of this loop iteration
-        if available_frames == 0 {
-            continue;
-        }
-
-        if available_frames as usize != chunk_frames {
-            error!("CAPT: available_frames {} != chunk_frames {} in EXCLUSIVE mode, failure in wasapi!", available_frames, chunk_frames);
-            return Err(DeviceError::new("CAPT: Misbehaving EXCLUSIVE mode").into());
         }
 
         // empty buffers are received from the main thread to avoid costly allocation in the inner loop
