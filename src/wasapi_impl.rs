@@ -968,25 +968,25 @@ fn capture_loop(
             return Ok(());
         }
 
-        trace!("CAPT: processed samples for {:?}", now.elapsed());
+        trace!("CAPT: loop spent outside of wait_for_event {:?}", now.elapsed());
         now = Instant::now();
         let timeout = 250;
         if handle.wait_for_event(timeout).is_err() {
             trace!("CAPT: Timeout {}ms on event", timeout);
             if !inactive {
-                warn!("CAPT: No data received within timeout of {}ms", timeout);
+                warn!("CAPT: No data received within timeout of {}ms, inactive", timeout);
                 inactive = true;
             }
             // no data received, continue the loop
             now = Instant::now();
             continue;
         }
-        trace!("CAPT: waited for event: {:?}", now.elapsed());
+        trace!("CAPT: loop spent in wait_for_event {:?}", now.elapsed());
         now = Instant::now();
 
         // no event timeout, should have received data
         if inactive {
-            trace!("CAPT: data received");
+            trace!("CAPT: resuming, data received");
             inactive = false;
         }
 
