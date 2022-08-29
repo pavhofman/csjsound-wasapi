@@ -900,8 +900,7 @@ fn capture_loop(
 
     let callbacks_rc = Rc::new(callbacks);
     let callbacks_weak = Rc::downgrade(&callbacks_rc);
-    let mut pos = 0;
-    let mut device_prevtime = 0.0;
+    let mut device_prevtime = None;
     let clock = audio_client.get_audioclock()?;
 
     let sessioncontrol = audio_client.get_audiosessioncontrol()?;
@@ -985,30 +984,6 @@ fn capture_loop(
 
         let available_frames = audio_client.get_available_space_in_frames()?;
         trace!("CAPT: Available frames from dev: {}", available_frames);
-        let device_time = pos as f64 / device_freq;
-        //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
-        //println!("{}",prev_inst.elapsed().as_micros());
-        trace!(
-            "CAPT: Device time grew by {} s",
-            device_time - device_prevtime
-        );
-        if available_frames > 0 && (device_time - device_prevtime) > 1.5 * (available_frames as f64 / samplerate as f64) as f64 {
-            warn!(
-                "CAPT: Missing event! Interval {} s, expected {} s",
-                device_time - device_prevtime,
-                available_frames as f64 / samplerate as f64
-            );
-            if running {
-                // warn!("CAPT: Resetting stream");
-                // audio_client.stop_stream()?;
-                // audio_client.reset_stream()?;
-                // audio_client.start_stream()?;
-                running = true;
-            }
-        }
-        device_prevtime = device_time;
-
-
         // If no available frames, just skip the rest of this loop iteration
         if available_frames == 0 {
             continue;
@@ -1084,6 +1059,31 @@ fn capture_loop(
             }
         }
         chunk_nbr += 1;
-        pos = clock.get_position()?.0;
+        let pos = clock.get_position()?.0;
+        let device_time = pos as f64 / device_freq;
+        if device_prevtime.is_some() {
+            let prevtime = device_prevtime.unwrap();
+            //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
+            //println!("{}",prev_inst.elapsed().as_micros());
+            trace!(
+            "CAPT: Device time grew by {} s",
+            device_time - prevtime
+        );
+            if available_frames > 0 && (device_time - prevtime) > 1.5 * (available_frames as f64 / samplerate as f64) as f64 {
+                warn!(
+                "CAPT: Missing event! Interval {} s, expected {} s",
+                device_time - prevtime,
+                available_frames as f64 / samplerate as f64
+            );
+                if running {
+                    // warn!("CAPT: Resetting stream");
+                    // audio_client.stop_stream()?;
+                    // audio_client.reset_stream()?;
+                    // audio_client.start_stream()?;
+                    running = true;
+                }
+            }
+        }
+        device_prevtime = Some(device_time);
     }
 }
