@@ -16,7 +16,6 @@ use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 use crate::{MixerDesc, Res};
 use crate::formats::{Format, get_possible_formats, WV_FMTS_BY_FORMAT};
 
-
 // defined in JAVA
 const NOT_SPECIFIED: i32 = -1;
 
@@ -727,7 +726,7 @@ fn playback_loop(
     let tx_cb = sync.tx_cb;
     let mut callbacks = wasapi::EventCallbacks::new();
     callbacks.set_disconnected_callback(move |reason| {
-        debug!("PB: Disconnected, reason: {:?}", reason);
+        debug!("PB INNER: Disconnected, reason: {:?}", reason);
         let simplereason = match reason {
             DisconnectReason::FormatChanged => Disconnected::FormatChange,
             _ => Disconnected::Error,
@@ -755,46 +754,24 @@ fn playback_loop(
         let _res = AvSetMmThreadCharacteristicsW(PCWSTR::from(&"Pro Audio".into()), &mut task_idx);
     }
     if task_idx > 0 {
-        trace!("PB: thread raised priority, task index: {}", task_idx);
+        trace!("PB INNER: thread raised priority, task index: {}", task_idx);
     } else {
-        warn!("PB: Failed to raise thread priority");
+        warn!("PB INNER: Failed to raise thread priority");
     }
 
     audio_client.stop_stream()?;
     let mut running = false;
-    let mut pos = 0;
-    let mut device_prevtime = 0.0;
+    let mut device_prevtime = None;
     let device_freq = clock.get_frequency()? as f64;
     let render_client = audio_client.get_audiorenderclient()?;
     //let file_res: Result<Box<dyn Write>, std::io::Error> = File::create("inner.raw").map(|f| Box::new(f) as Box<dyn Write>);
     //let mut file = file_res.unwrap();
     loop {
         let buffer_free_frames = audio_client.get_available_space_in_frames()?;
-        trace!("PB: New buffer frame count {}", buffer_free_frames);
-        let device_time = pos as f64 / device_freq;
-        //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
-        //println!("{}",prev_inst.elapsed().as_micros());
-        trace!(
-            "PB: Device time grew by {} s",
-            device_time - device_prevtime
-        );
-        if buffer_free_frames > 0 && (device_time - device_prevtime) > 1.5 * (buffer_free_frames as f64 / samplerate as f64) as f64 {
-            warn!(
-                "PB: Missing event! Resetting stream. Interval {} s, expected {} s",
-                device_time - device_prevtime,
-                buffer_free_frames as f64 / samplerate as f64
-            );
-            if running {
-                audio_client.stop_stream()?;
-                audio_client.reset_stream()?;
-                audio_client.start_stream()?;
-                running = true;
-            }
-        }
-        device_prevtime = device_time;
+        trace!("PB INNER: New buffer frame count {}", buffer_free_frames);
 
         if sync.start_signal.load(Ordering::Relaxed) {
-            debug!("PB: Starting inner loop");
+            debug!("PB INNER: Starting inner loop");
             if !running {
                 audio_client.start_stream()?;
                 running = true;
@@ -803,7 +780,7 @@ fn playback_loop(
             // staying in the loop
         }
         if sync.stop_signal.load(Ordering::Relaxed) {
-            debug!("PB: Stopping inner loop");
+            debug!("PB INNER: Stopping inner loop");
             if running {
                 audio_client.stop_stream()?;
                 running = false;
@@ -812,7 +789,7 @@ fn playback_loop(
             // staying in the loop
         }
         if sync.exit_signal.load(Ordering::Relaxed) {
-            debug!("PB: Exiting inner loop");
+            debug!("PB INNER: Exiting inner loop");
             audio_client.stop_stream()?;
             running = false;
             sync.exit_signal.store(false, Ordering::Relaxed);
@@ -824,16 +801,16 @@ fn playback_loop(
         // reading from data channel with timeout 5ms
         let chunk = match sync.rx_dev.recv_timeout(Duration::from_millis(5)) {
             Ok(chunk) => {
-                trace!("PB: got chunk");
+                trace!("PB INNER: got chunk");
                 if !running {
-                    warn!("PB: received chunk in stopped device, starting automatically!");
+                    warn!("PB INNER: received chunk in stopped device, starting automatically!");
                     audio_client.start_stream()?;
                     running = true;
                 }
                 Some(chunk)
             }
             Err(RecvTimeoutError::Timeout) => {
-                trace!("PB: chunk receive timed out, no data");
+                trace!("PB INNER: chunk receive timed out, no data");
                 // sleeping is provided by recv_timeout(timeout)
                 if running {
                     audio_client.stop_stream()?;
@@ -842,7 +819,7 @@ fn playback_loop(
                 None
             }
             Err(RecvTimeoutError::Disconnected) => {
-                let msg = "PB: data channel is closed";
+                let msg = "PB INNER: data channel is closed";
                 error!("{}", msg);
                 if running {
                     audio_client.stop_stream()?;
@@ -862,19 +839,43 @@ fn playback_loop(
             )?;
             // for reporting position
             sync.wasapi_bufferfill_bytes.store(chunk_frames * frame_bytes, Ordering::Relaxed);
-            trace!("PB: write ok");
+            trace!("PB INNER: write ok");
             let now = Instant::now();
             if handle.wait_for_event(1000).is_err() {
-                error!("PB: Error on playback, stopping stream");
+                error!("PB INNER: Error on playback, stopping stream");
                 audio_client.stop_stream()?;
                 running = false;
-                return Err(DeviceError::new("PB: Error on playback").into());
+                return Err(DeviceError::new("PB INNER: Error on playback").into());
             }
-            trace!("PB: waited for event: {:?}", now.elapsed());
+            trace!("PB INNER: waited for event: {:?}", now.elapsed());
             // buffer empty
             sync.wasapi_bufferfill_bytes.store(0, Ordering::Relaxed);
         }
-        pos = clock.get_position()?.0;
+        let pos = clock.get_position()?.0;
+        let device_time = pos as f64 / device_freq;
+        if device_prevtime.is_some() {
+            let prevtime = device_prevtime.unwrap();
+            //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
+            //println!("{}",prev_inst.elapsed().as_micros());
+            trace!(
+                "PB INNER: Device time grew by {} s",
+                device_time - prevtime
+            );
+            if buffer_free_frames > 0 && (device_time - prevtime) > 1.5 * (buffer_free_frames as f64 / samplerate as f64) as f64 {
+                warn!(
+                    "PB INNER: Missing event! Resetting stream. Interval {} s, expected {} s",
+                    device_time - prevtime,
+                    buffer_free_frames as f64 / samplerate as f64
+                );
+                if running {
+                    audio_client.stop_stream()?;
+                    audio_client.reset_stream()?;
+                    audio_client.start_stream()?;
+                    running = true;
+                }
+            }
+        }
+        device_prevtime = Some(device_time);
     }
 }
 
@@ -890,7 +891,7 @@ fn capture_loop(
 
     let mut callbacks = wasapi::EventCallbacks::new();
     callbacks.set_disconnected_callback(move |reason| {
-        debug!("CAPT: disconnected, reason: {:?}", reason);
+        debug!("CAPT INNER: disconnected, reason: {:?}", reason);
         let simplereason = match reason {
             DisconnectReason::FormatChanged => Disconnected::FormatChange,
             _ => Disconnected::Error,
@@ -918,9 +919,9 @@ fn capture_loop(
         let _res = AvSetMmThreadCharacteristicsW(PCWSTR::from(&"Pro Audio".into()), &mut task_idx);
     }
     if task_idx > 0 {
-        trace!("CAPT: thread raised priority, task index: {}", task_idx);
+        trace!("CAPT INNER: thread raised priority, task index: {}", task_idx);
     } else {
-        warn!("CAPT: Failed to raise thread priority");
+        warn!("CAPT INNER: Failed to raise thread priority");
     }
     let device_freq = clock.get_frequency()? as f64;
     let max_duration = Duration::from_millis(100);
@@ -930,20 +931,20 @@ fn capture_loop(
     //trace!("Starting capture stream");
     audio_client.stop_stream()?;
     let available_frames = audio_client.get_available_space_in_frames()?;
-    trace!("CAPT: Available frames from dev: {}", available_frames);
+    trace!("CAPT INNER: Available frames from dev: {}", available_frames);
     if available_frames as usize != chunk_frames {
-        error!("CAPT: available_frames {} != chunk_frames {} in EXCLUSIVE mode, failure in wasapi!", available_frames, chunk_frames);
-        return Err(DeviceError::new("CAPT: Misbehaving EXCLUSIVE mode").into());
+        error!("CAPT INNER: available_frames {} != chunk_frames {} in EXCLUSIVE mode, failure in wasapi!", available_frames, chunk_frames);
+        return Err(DeviceError::new("CAPT INNER: Misbehaving EXCLUSIVE mode").into());
     }
 
     //trace!("Started capture stream");
     let mut now = Instant::now();
     loop {
-        trace!("CAPT: capturing");
+        trace!("CAPT INNER: capturing");
 
         // handling signals
         if sync.start_signal.load(Ordering::Relaxed) {
-            debug!("CAPT: Starting device");
+            debug!("CAPT INNER: Starting device");
             if !running {
                 audio_client.start_stream()?;
                 running = true;
@@ -952,7 +953,7 @@ fn capture_loop(
             // staying in the loop
         }
         if sync.stop_signal.load(Ordering::Relaxed) {
-            debug!("CAPT: Stopping device");
+            debug!("CAPT INNER: Stopping device");
             if running {
                 audio_client.stop_stream()?;
                 running = false;
@@ -961,32 +962,32 @@ fn capture_loop(
             // staying in the loop
         }
         if sync.exit_signal.load(Ordering::Relaxed) {
-            debug!("CAPT: Exiting inner loop");
+            debug!("CAPT INNER: Exiting inner loop");
             audio_client.stop_stream()?;
             running = false;
             sync.exit_signal.store(false, Ordering::Relaxed);
             return Ok(());
         }
 
-        trace!("CAPT: loop spent outside of wait_for_event {:?}", now.elapsed());
+        trace!("CAPT INNER: loop spent outside of wait_for_event {:?}", now.elapsed());
         now = Instant::now();
         let timeout = 250;
         if handle.wait_for_event(timeout).is_err() {
-            trace!("CAPT: Timeout {}ms on event", timeout);
+            trace!("CAPT INNER: Timeout {}ms on event", timeout);
             if !inactive {
-                warn!("CAPT: No data received within timeout of {}ms, inactive", timeout);
+                warn!("CAPT INNER: No data received within timeout of {}ms, inactive", timeout);
                 inactive = true;
             }
             // no data received, continue the loop
             now = Instant::now();
             continue;
         }
-        trace!("CAPT: loop spent in wait_for_event {:?}", now.elapsed());
+        trace!("CAPT INNER: loop spent in wait_for_event {:?}", now.elapsed());
         now = Instant::now();
 
         // no event timeout, should have received data
         if inactive {
-            trace!("CAPT: resuming, data received");
+            trace!("CAPT INNER: resuming, data received");
             inactive = false;
         }
 
@@ -997,7 +998,7 @@ fn capture_loop(
                 buf
             }
             None => {
-                trace!("CAPT: Getting preallocated chunk from return queue containing {} items", sync.rx_prealloc.len());
+                trace!("CAPT INNER: Getting preallocated chunk from return queue containing {} items", sync.rx_prealloc.len());
                 sync.rx_prealloc.recv().unwrap()
             }
         };
@@ -1015,43 +1016,43 @@ fn capture_loop(
             (frames_read, flags) = capture_client.read_from_device(frame_bytes as usize, &mut data[0..chunk_bytes])?;
             if frames_read == 0 {
                 if duration > max_duration {
-                    warn!("CAPT: reading from device took longer than {:?}, aborting", max_duration);
+                    warn!("CAPT INNER: reading from device took longer than {:?}, aborting", max_duration);
                     break;
                 } else {
-                    debug!("CAPT: read 0 frames, will try again after sleep {:?}", sleep_duration);
+                    debug!("CAPT INNER: read 0 frames, will try again after sleep {:?}", sleep_duration);
                     sleep(sleep_duration);
                     duration += sleep_duration;
                 }
             }
         }
         if frames_read != available_frames {
-            warn!("CAPT: expected {} frames, got {} in EXCLUSIVE mode!",available_frames, frames_read);
+            warn!("CAPT INNER: expected {} frames, got {} in EXCLUSIVE mode!",available_frames, frames_read);
         }
 
         if flags.silent {
-            debug!("CAPT: buffer marked as silent");
+            debug!("CAPT INNER: buffer marked as silent");
             // zeroing all captured samples
             data.iter_mut().take(chunk_bytes).for_each(|val| *val = 0);
         }
 
         if flags.data_discontinuity {
-            warn!("CAPT: device reported a buffer overrun");
+            warn!("CAPT INNER: device reported a buffer overrun");
         }
         if flags.timestamp_error {
-            warn!("CAPT: device reported a timestamp error");
+            warn!("CAPT INNER: device reported a timestamp error");
         }
 
-        trace!("CAPT: Sending chunk to main queue containing {} items", sync.tx_dev.len());
+        trace!("CAPT INNER: Sending chunk to main queue containing {} items", sync.tx_dev.len());
         match sync.tx_dev.try_send((chunk_nbr, data)) {
             Ok(()) => {}
             Err(TrySendError::Full((nbr, data))) => {
-                debug!("CAPT: Outer side not consuming chunks, dropping captured chunk {}", nbr);
+                debug!("CAPT INNER: Outer side not consuming chunks, dropping captured chunk {}", nbr);
                 saved_buffer = Some(data);
             }
             Err(TrySendError::Disconnected(_)) => {
-                error!("CAPT: Error sending , channel from inner thread to main disconnected");
+                error!("CAPT INNER: Error sending , channel from inner thread to main disconnected");
                 audio_client.stop_stream()?;
-                return Err(DeviceError::new("CAPT: Error sending, channel from inner thread to main disconnected").into());
+                return Err(DeviceError::new("CAPT INNER: Error sending, channel from inner thread to main disconnected").into());
             }
         }
         chunk_nbr += 1;
@@ -1062,17 +1063,17 @@ fn capture_loop(
             //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
             //println!("{}",prev_inst.elapsed().as_micros());
             trace!(
-            "CAPT: Device time grew by {} s",
+            "CAPT INNER: Device time grew by {} s",
             device_time - prevtime
         );
             if available_frames > 0 && (device_time - prevtime) > 1.5 * (available_frames as f64 / samplerate as f64) as f64 {
                 warn!(
-                "CAPT: Missing event! Interval {} s, expected {} s",
+                "CAPT INNER: Missing event! Interval {} s, expected {} s",
                 device_time - prevtime,
                 available_frames as f64 / samplerate as f64
             );
                 if running {
-                    // warn!("CAPT: Resetting stream");
+                    // warn!("CAPT INNER: Resetting stream");
                     // audio_client.stop_stream()?;
                     // audio_client.reset_stream()?;
                     // audio_client.start_stream()?;
