@@ -13,7 +13,9 @@ use jni::JNIEnv;
 use jni::objects::{AutoArray, AutoPrimitiveArray, JClass, JObject, JString, JValue, ReleaseMode};
 use jni::signature::TypeSignature;
 use jni::sys::{jboolean, jbyteArray, jint, jintArray, jlong, jobject};
+use lazy_static::lazy_static;
 use log::{debug, error, info, LevelFilter, trace};
+use time::{format_description, OffsetDateTime};
 use wasapi::Direction;
 
 use wasapi_impl::*;
@@ -40,16 +42,26 @@ pub struct LogFormat {
     pub display_line_level: LevelFilter,
 }
 
+lazy_static! {
+    static ref TIME_FORMAT: Vec<format_description::FormatItem<'static>>= format_description::parse("[hour]:[minute]:[second].[subsecond]").unwrap();
+}
+
+fn systemtime_strftime<T>(dt: T) -> String
+    where T: Into<OffsetDateTime> {
+    dt.into().format(&TIME_FORMAT).unwrap()
+}
+
+
 impl RecordFormat for LogFormat {
     fn do_format(&self, arg: &mut FastLogRecord) -> String {
         match &arg.command {
             Command::CommandRecord => {
                 let data;
-                let now = fastdate::Time::from(fastdate::DateTime::now());
+                let time_str = systemtime_strftime(arg.now);
                 if arg.level.to_level_filter() >= self.display_line_level {
                     data = format!(
                         "{} {} [{}:{}] {}\n",
-                        &now,
+                        time_str,
                         arg.level,
                         arg.file,
                         arg.line.unwrap_or_default(),
@@ -58,7 +70,7 @@ impl RecordFormat for LogFormat {
                 } else {
                     data = format!(
                         "{} {} {} - {}\n",
-                        &now, arg.level, arg.module_path, arg.args
+                        time_str, arg.level, arg.module_path, arg.args
                     );
                 }
                 return data;
