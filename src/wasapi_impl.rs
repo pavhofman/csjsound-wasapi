@@ -207,6 +207,21 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
     Ok(formats)
 }
 
+/// lowest common multiple
+fn lcm(n1: usize, n2: usize) -> usize {
+    let (mut x, mut y) = if n1 > n2 {
+        (n1, n2)
+    } else {
+        (n2, n1)
+    };
+    let mut rem = x % y;
+    while rem != 0 {
+        x = y;
+        y = rem;
+        rem = x % y;
+    }
+    n1 * n2 / y
+}
 
 pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: usize, frame_bytes: usize,
                    channels: usize, buffer_bytes: usize) -> Res<RuntimeData> {
@@ -222,8 +237,23 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
 
     let is_playback = *dir == Direction::Render;
 
-    // 30 ms
-    let dev_period = cmp::max(30 * 10_000, min_period);
+    // period around 30 ms
+    let approx_dev_period = cmp::max(30 * 10_000, min_period);
+    // aligning to frame_bytes AND 128bytes for IntelHDA
+    // finding the lowest common multiple
+    let frame_bytes_multiple = lcm(frame_bytes, 128);
+    let frame_bytes_multiple_ns00 = frame_bytes_multiple as f64 * 10_000_000.0 / rate  as f64;
+
+    // aligning
+    let multiples_cnt = ((approx_dev_period as f64 / frame_bytes_multiple_ns00) + 0.5) as i64;
+    debug!("{}: frame_bytes_multiple: {}, frame_bytes_multiple_ns00: {}, multiples_cnt {} in approx_dev_period {}",
+        dir, frame_bytes_multiple, frame_bytes_multiple_ns00, multiples_cnt, approx_dev_period);
+    let mut dev_period = (multiples_cnt as f64 * frame_bytes_multiple_ns00 + 0.5) as i64;
+    if dev_period < min_period {
+        // adding one more ns00 multiple
+        dev_period += frame_bytes_multiple_ns00 as i64;
+    }
+    debug!("{}: Using dev_period {}", dir, dev_period);
     // this code assumes device.Initialize will use closely similar buffer to dev_period
     let estimated_chunk_frames = (rate as i64 * dev_period / 10_000_000) as usize;
     let chunks = ((buffer_bytes as f32 / frame_bytes as f32) / estimated_chunk_frames as f32) as usize;
