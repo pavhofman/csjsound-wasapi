@@ -67,18 +67,16 @@ const SPEAKER_7POINT1_SURROUND: u32 = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
     SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
     SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
 
-lazy_static! {
-static ref CHANNEL_MASKS: Vec<Vec<u32>> = vec![
-    vec![SPEAKER_FRONT_CENTER],
-    vec![SPEAKER_STEREO],
-    vec![SPEAKER_STEREO | SPEAKER_LOW_FREQUENCY],
-    vec![SPEAKER_QUAD, SPEAKER_SURROUND],
-    vec![SPEAKER_QUAD | SPEAKER_LOW_FREQUENCY, SPEAKER_SURROUND | SPEAKER_LOW_FREQUENCY],
-    vec![SPEAKER_5POINT1, SPEAKER_5POINT1_SURROUND],
-    vec![SPEAKER_5POINT1 | SPEAKER_BACK_CENTER, SPEAKER_5POINT1_SURROUND | SPEAKER_BACK_CENTER],
-    vec![SPEAKER_7POINT1, SPEAKER_7POINT1_SURROUND],
+const CHANNEL_MASKS: [&[u32]; 8] = [
+    &[SPEAKER_FRONT_CENTER],
+    &[SPEAKER_STEREO],
+    &[SPEAKER_STEREO | SPEAKER_LOW_FREQUENCY],
+    &[SPEAKER_QUAD, SPEAKER_SURROUND],
+    &[SPEAKER_QUAD | SPEAKER_LOW_FREQUENCY, SPEAKER_SURROUND | SPEAKER_LOW_FREQUENCY],
+    &[SPEAKER_5POINT1, SPEAKER_5POINT1_SURROUND],
+    &[SPEAKER_5POINT1 | SPEAKER_BACK_CENTER, SPEAKER_5POINT1_SURROUND | SPEAKER_BACK_CENTER],
+    &[SPEAKER_7POINT1, SPEAKER_7POINT1_SURROUND],
 ];
-}
 
 pub fn init_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec<usize>, accepted_combination: T)
     where T: Fn(usize, usize) -> bool {
@@ -117,8 +115,8 @@ pub fn get_possible_formats(storebits: usize, validbits: usize, rate: usize, cha
     );
 
     // Portaudio channel masks are most likely, adding them first
-    if channels < CHANNEL_MASKS.len() {
-        for &mask in &CHANNEL_MASKS[channels - 1] {
+    if channels <= CHANNEL_MASKS.len() {
+        for &mask in CHANNEL_MASKS[channels - 1] {
             let mut cloned = wvformat.clone();
             cloned.wave_fmt.dwChannelMask = mask;
             wvformats.push(cloned);
