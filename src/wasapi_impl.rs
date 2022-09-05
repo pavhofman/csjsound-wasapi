@@ -228,34 +228,39 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
     let (_device, device_name, audio_client) = get_device_details(&device_id, dir)?;
     debug!("Opening {} device {}: rate: {}, validbits: {}, frame_bytes: {}, channels: {}, buffer_bytes: {}",
         dir, device_name, rate, validbits, frame_bytes, channels, buffer_bytes);
-    let (_def_period, min_period) = audio_client.get_periods()?;
+    let (_def_period_ns00, min_period_ns00) = audio_client.get_periods()?;
     debug!(
         "{}: default period {}, min period {}",
         dir,
-        _def_period, min_period
+        _def_period_ns00, min_period_ns00
     );
 
     let is_playback = *dir == Direction::Render;
 
     // period around 30 ms
-    let approx_dev_period = cmp::max(30 * 10_000, min_period);
-    // aligning to frame_bytes AND 128bytes for IntelHDA
-    // finding the lowest common multiple
-    let frame_bytes_multiple = lcm(frame_bytes, 128);
-    let frame_bytes_multiple_ns00 = frame_bytes_multiple as f64 * 10_000_000.0 / rate  as f64;
+    let approx_period_ns00 = cmp::max(30 * 10_000, min_period_ns00);
+    let align_segment_bytes = if channels <= 16 {
+        // can be IntelHDA (max 16 channels by specs) which in addition to frames requires aligning to 128 bytes
+        // finding the lowest common multiple
+        lcm(frame_bytes, 128)
+    } else {
+        // only aligning to frames
+        frame_bytes
+    };
+    let align_segment_ns00 = align_segment_bytes as f64 * 10_000_000.0 / rate  as f64;
 
     // aligning
-    let multiples_cnt = ((approx_dev_period as f64 / frame_bytes_multiple_ns00) + 0.5) as i64;
-    debug!("{}: frame_bytes_multiple: {}, frame_bytes_multiple_ns00: {}, multiples_cnt {} in approx_dev_period {}",
-        dir, frame_bytes_multiple, frame_bytes_multiple_ns00, multiples_cnt, approx_dev_period);
-    let mut dev_period = (multiples_cnt as f64 * frame_bytes_multiple_ns00 + 0.5) as i64;
-    if dev_period < min_period {
-        // adding one more ns00 multiple
-        dev_period += frame_bytes_multiple_ns00 as i64;
+    let align_segments = ((approx_period_ns00 as f64 / align_segment_ns00) + 0.5) as i64;
+    debug!("{}: align_segment_bytes: {}, align_segment_ns00: {}, align_segments {} in approx_dev_period {}",
+        dir, align_segment_bytes, align_segment_ns00, align_segments, approx_period_ns00);
+    let mut period_ns00 = (align_segments as f64 * align_segment_ns00 + 0.5) as i64;
+    if period_ns00 < min_period_ns00 {
+        // adding one more ns00 segment
+        period_ns00 += align_segment_ns00 as i64;
     }
-    debug!("{}: Using dev_period {}", dir, dev_period);
+    debug!("{}: Using device period {}", dir, period_ns00);
     // this code assumes device.Initialize will use closely similar buffer to dev_period
-    let estimated_chunk_frames = (rate as i64 * dev_period / 10_000_000) as usize;
+    let estimated_chunk_frames = (rate as i64 * period_ns00 / 10_000_000) as usize;
     let chunks = ((buffer_bytes as f32 / frame_bytes as f32) / estimated_chunk_frames as f32) as usize;
     trace!("{}: Using {} chunks in buffer => total estimated {} bytes", dir, chunks, chunks * estimated_chunk_frames * frame_bytes);
     let (play_tx_dev, play_rx_dev, play_draining_rx_dev) = if is_playback {
@@ -315,7 +320,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
                     validbits,
                     frame_bytes,
                     channels,
-                    dev_period,
+                    period_ns00,
                 ) {
                     Ok((_device, audio_client, handle)) => {
                         let client_buffer_frames = audio_client.get_bufferframecount().unwrap() as usize;
