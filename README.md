@@ -19,11 +19,8 @@ The javasound API requires a list of pre-determined formats supported by the dev
 -DcsjsoundChannels=1,2,4,6,8
 ```
 
-or default values specified in 
-https://github.com/pavhofman/csjsound-provider/blob/4326a4d77201f24c4b39be7391b3b45bfd76c204/src/main/java/com/cleansine/sound/provider/SimpleMixerProvider.java#L32
-and
-https://github.com/pavhofman/csjsound-provider/blob/4326a4d77201f24c4b39be7391b3b45bfd76c204/src/main/java/com/cleansine/sound/provider/SimpleMixerProvider.java#L36 
-are used.
+or default values specified in https://github.com/pavhofman/csjsound-provider/blob/4326a4d77201f24c4b39be7391b3b45bfd76c204/src/main/java/com/cleansine/sound/provider/SimpleMixerProvider.java#L32-L33 and
+https://github.com/pavhofman/csjsound-provider/blob/4326a4d77201f24c4b39be7391b3b45bfd76c204/src/main/java/com/cleansine/sound/provider/SimpleMixerProvider.java#L36 are used.
 
 If only default values are used, a limit condition during the check is applied 
 
@@ -40,7 +37,7 @@ vec!((16, 16), (24, 24), (24, 32), (32, 32))
 
 The following channel masks are sequentially checked:
 1. Masks used by PortAudio (defined for up to 8 channels)
-https://github.com/pavhofman/csjsound-wasapi/blob/main/src/formats.rs#L70
+https://github.com/pavhofman/csjsound-wasapi/blob/dea6073ca979cb7c3e2e316907f86c4431a397d1/src/formats.rs#L70-L79
 2. Sequential bitmask for any channels count (e.g. 0b0...011_1111 for channels = 6)
 3. Zero channel mask (as required by some capture devices)
 
