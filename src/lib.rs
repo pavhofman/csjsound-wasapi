@@ -87,6 +87,7 @@ impl RecordFormat for LogFormat {
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
 (env: JNIEnv, _clazz: JClass, logLevelID: jint, logTarget: JString,
  jrates: jintArray, jchannels: jintArray, maxRatesLimit: jint, maxChannelsLimit: jint) -> jboolean {
+    // logging initialization
     let log_target_str = get_string(env, logTarget);
     let log_level: LevelFilter = match logLevelID as usize {
         // same constants as in the java provider
@@ -108,7 +109,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
             let _file = match File::create(other) {
                 Ok(file) => { file }
                 Err(err) => {
-                    error!("{}: Failed to create log file {}: {}", function_name!(), other, err);
+                    error!("{} [{}]: Failed to create log file {}: {}", function_name!(), get_thread_name(env), other, err);
                     return 0 as jboolean;
                 }
             };
@@ -116,8 +117,10 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
         }
     };
     fast_log::init(config).unwrap();
+    // logging ready
 
     trace!("{}", function_name!());
+    info!("Initialized from thread: {}", get_thread_name(env));
 
     let rates = from_jint_array(env, jrates);
     debug!("Received rates to test: {:?}", rates);
@@ -142,7 +145,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
             1 as jboolean
         }
         Err(err) => {
-            error!("{}: WASAPI init failed: {}", function_name!(), err);
+            error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
             0 as jboolean
         }
     };
@@ -162,7 +165,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
     let formats = match do_get_formats(deviceIDStr, &get_direction(isSource)) {
         Ok(formats) => formats,
         Err(err) => {
-            error!("{}: get_fmts failed: {:?}\n", function_name!(), err);
+            error!("{} [{}]: get_fmts failed: {:?}\n", function_name!(), get_thread_name(env), err);
             return;
         }
     };
@@ -187,7 +190,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
                                                ]) {
             Ok(_) => {}
             Err(err) => {
-                error!("{}: Calling method addFormat failed: {:?}\n", function_name!(), err);
+                error!("{} [{}]: Calling method addFormat failed: {:?}\n", function_name!(), get_thread_name(env), err);
                 return;
             }
         }
@@ -213,7 +216,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
                                              channels as usize, bufferBytes as usize) {
         Ok(rtd) => rtd,
         Err(err) => {
-            error!("{}: open_dev failed: {:?}\n", function_name!(), err);
+            error!("{} [{}]: open_dev failed: {:?}\n", function_name!(), get_thread_name(env), err);
             // SimpleDataLine.doOpen checks for 0 (= NULL)
             return 0;
         }
@@ -230,13 +233,13 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStart
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStart
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
     let rtd = get_rtd(nativePtr);
     match do_start(rtd, &get_direction(isSource)) {
         Ok(_) => {}
         Err(err) => {
-            error!("{}: start failed: {:?}\n", function_name!(), err);
+            error!("{} [{}]: start failed: {:?}\n", function_name!(), get_thread_name(env), err);
         }
     }
 }
@@ -249,13 +252,13 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStop
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStop
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
     let rtd = get_rtd(nativePtr);
     match do_stop(rtd, &get_direction(isSource)) {
         Ok(_) => {}
         Err(err) => {
-            error!("{}: stop failed: {:?}\n", function_name!(), err);
+            error!("{} [{}]: stop failed: {:?}\n", function_name!(), get_thread_name(env), err);
         }
     }
 }
@@ -268,7 +271,7 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nClose
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
 
     // need to release the allocated memory => getting the box
@@ -276,7 +279,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
     match do_close(&rtd, &get_direction(isSource)) {
         Ok(_) => {}
         Err(err) => {
-            error!("{}: closing failed: {:?}\n", function_name!(), err);
+            error!("{} [{}]: closing failed: {:?}\n", function_name!(), get_thread_name(env), err);
         }
     }
     // freeing rtd from heap
@@ -301,7 +304,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nWrite
     let cnt = match do_write(rtd, items, offset as usize, len as usize) {
         Ok(cnt) => cnt,
         Err(e) => {
-            error!("{}: Writing failed: {:?}", function_name!(), e);
+            error!("{} [{}]: Writing failed: {:?}", function_name!(), get_thread_name(env), e);
             return -1 as jint;
         }
     };
@@ -325,7 +328,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nRead
     let cnt = match do_read(rtd, items, offset as usize, len as usize) {
         Ok(cnt) => cnt,
         Err(e) => {
-            error!("{}: Reading failed: {:?}", function_name!(), e);
+            error!("{} [{}]: Reading failed: {:?}", function_name!(), get_thread_name(env), e);
             return -1 as jint;
         }
     };
@@ -340,14 +343,14 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferB
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferBytes
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
     let dir = get_direction(isSource);
     trace!("{} {}", function_name!(), dir);
     let rtd = get_rtd(nativePtr);
     let bytes = match do_get_buffer_bytes(rtd, &dir) {
         Ok(size) => size,
         Err(e) => {
-            error!("{}: Getting buffer_bytes failed: {:?}", function_name!(), e);
+            error!("{} [{}]: Getting buffer_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
             return 0 as jint;
         }
     };
@@ -391,7 +394,7 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBy
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBytes
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
     let dir = get_direction(isSource);
     trace!("{} {}", function_name!(), dir);
 
@@ -399,7 +402,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBy
     let bytes = match do_get_avail_bytes(rtd, &dir) {
         Ok(size) => size,
         Err(e) => {
-            error!("{}: Getting avail_bytes failed: {:?}", function_name!(), e);
+            error!("{} [{}]: Getting avail_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
             return 0 as jint;
         }
     };
@@ -415,13 +418,13 @@ JNIEXPORT jlong JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePo
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean, javaBytePos: jlong) -> jlong {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean, javaBytePos: jlong) -> jlong {
     trace!("{}", function_name!());
     let rtd = get_rtd(nativePtr);
     let bytes = match do_get_byte_pos(rtd, &get_direction(isSource), javaBytePos as u64) {
         Ok(size) => size,
         Err(e) => {
-            error!("{}: Getting avail_bytes failed: {:?}", function_name!(), e);
+            error!("{} [{}]: Getting avail_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
             return 0 as jlong;
         }
     };
@@ -436,12 +439,12 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_nGe
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nGetMixerCnt
-(_env: JNIEnv, _clazz: JClass) -> jint {
+(env: JNIEnv, _clazz: JClass) -> jint {
     trace!("{}", function_name!());
     let cnt = match do_get_device_cnt() {
         Ok(cnt) => cnt,
         Err(e) => {
-            error!("{}: Getting DeviceCollection failed: {:?}", function_name!(), e);
+            error!("{} [{}]: Getting DeviceCollection failed: {:?}", function_name!(), get_thread_name(env),  e);
             return 0 as jint;
         }
     };
@@ -464,7 +467,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCr
     let desc = match do_get_mixer_desc(idx as u32) {
         Ok(desc) => desc,
         Err(err) => {
-            error!("{}: Getting MixerDesc for idx {} failed: {:?}", function_name!(), idx, err);
+            error!("{} [{}]: Getting MixerDesc for idx {} failed: {:?}", function_name!(), get_thread_name(env),  idx, err);
             return JObject::null().into_inner();
         }
     };
@@ -472,7 +475,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCr
     let info_cls = match env.find_class(MIXER_INFO_CLASS) {
         Ok(c) => c,
         Err(err) => {
-            error!("{}: info_cls class not found: {:?}\n", function_name!(), err);
+            error!("{} [{}]: info_cls class not found: {:?}\n", function_name!(), get_thread_name(env),  err);
             return JObject::null().into_inner();
         }
     };
@@ -493,7 +496,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCr
                                    ]) {
         Ok(obj) => obj,
         Err(err) => {
-            error!("{}: Cannot instantiate SimpleMixerInfo: {:?}", function_name!(), err);
+            error!("{} [{}]: Cannot instantiate SimpleMixerInfo: {:?}", function_name!(), get_thread_name(env),  err);
             return JObject::null().into_inner();
         }
     };
@@ -553,4 +556,57 @@ fn from_jint_array(env: JNIEnv, jarr: jintArray) -> Vec<usize> {
         values[i] = unsafe { *ptr.offset(i as isize) } as usize;
     }
     values
+}
+
+#[named]
+fn get_thread_name(env: JNIEnv) -> String {
+    let clazzName = "java/lang/Thread";
+    let clazz = env
+        .find_class(clazzName)
+        .expect(format!("Failed to load the class {}", clazzName).as_str());
+    // Then, we can look for it's static method 'currentThread'
+    /*
+      Remember that you can always get method signature using javap tool
+      > javap -s -p java.lang.Thread | grep -A 1 currentThread
+      public static native java.lang.Thread currentThread();
+      descriptor: ()Ljava/lang/Thread;
+    */
+    let thread_signature = TypeSignature::from_str("()Ljava/lang/Thread;").unwrap();
+    let threadValue = match env.call_static_method_unchecked(clazz,
+                                                             (clazz, "currentThread", "()Ljava/lang/Thread;"),
+                                                             thread_signature.ret,
+                                                             &[]) {
+        Ok(value) => { value }
+        Err(err) => {
+            error!("{}: Calling method currentThread failed: {:?}", function_name!(),  err);
+            return "FAILED".to_string();
+        }
+    };
+
+    let threadObj = match threadValue {
+        JValue::Object(obj) => { obj }
+        _ => {
+            error!("{}: Method currentThread did not return object", function_name!());
+            return "FAILED".to_string();
+        }
+    };
+
+    let nameValue = match env.call_method(threadObj,
+                                          "getName",
+                                          "()Ljava/lang/String;",
+                                          &[]) {
+        Ok(value) => { value }
+        Err(err) => {
+            error!("{}: Calling method getName failed: {:?}", function_name!(), err);
+            return "FAILED".to_string();
+        }
+    };
+    let name = match nameValue {
+        JValue::Object(obj) => { obj }
+        _ => {
+            error!("{}: Method currentThread did not return object", function_name!());
+            return "FAILED".to_string();
+        }
+    };
+    return get_string(env, JString::from(name));
 }
