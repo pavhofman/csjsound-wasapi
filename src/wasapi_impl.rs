@@ -156,16 +156,16 @@ pub fn do_get_formats(device_id: String, dir: &Direction) -> Res<Vec<Format>> {
 fn get_supported_format(client: &AudioClient, dev_name: &str, wvformat: &WaveFormat) -> Option<WaveFormat> {
     let result = match client.is_supported(wvformat, &ShareMode::Exclusive) {
         Ok(None) => {
-            debug!("Device {} supports format {:?}", dev_name, *wvformat);
+            debug!("{} device {} supports format {:?}", client.direction, dev_name, *wvformat);
             Some(wvformat.clone())
         }
         Ok(Some(similar_wvfmt)) => {
             // WASAPI specs say this should not happen in exclusive mode
-            debug!("Device {} supports similar format {:?}", dev_name, similar_wvfmt);
+            debug!("{} device {} supports similar format {:?}", client.direction, dev_name, similar_wvfmt);
             Some(similar_wvfmt)
         }
         Err(err) => {
-            debug!("Device {} does not support format {:?}: {}", dev_name, wvformat, err);
+            debug!("{} device {} does not support format {:?}: {}", client.direction, dev_name, wvformat, err);
             None
         }
     };
