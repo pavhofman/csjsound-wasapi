@@ -210,8 +210,10 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
 (env: JNIEnv, _clazz: JClass, deviceID: JString, isSource: jboolean,
  _enc: jint, rate: jint, sampleSignBits: jint, frameBytes: jint, channels: jint,
  _isSigned: jboolean, _isBigEndian: jboolean, bufferBytes: jint) -> jlong {
+    let direction = get_direction(isSource);
+    debug!("{} [{}]: Opening {} device", function_name!(), get_thread_name(env), &direction);
     let deviceIDStr = get_string(env, deviceID);
-    let rtd: RuntimeData = match do_open_dev(deviceIDStr, &get_direction(isSource), rate as usize,
+    let rtd: RuntimeData = match do_open_dev(deviceIDStr, &direction, rate as usize,
                                              sampleSignBits as usize, frameBytes as usize,
                                              channels as usize, bufferBytes as usize) {
         Ok(rtd) => rtd,
