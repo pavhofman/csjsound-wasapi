@@ -11,6 +11,7 @@ use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendErro
 use log::{debug, error, trace, warn};
 use wasapi::{AudioClient, BufferFlags, Device, DeviceCollection, Direction, DisconnectReason, Handle, initialize_sta, ShareMode, WaveFormat};
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE};
 use windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW;
 
 use crate::{MixerDesc, Res};
@@ -99,8 +100,26 @@ enum DeviceState {
 
 
 pub fn do_initialize_wasapi() -> Res<()> {
-    initialize_sta()?;
-    Ok(())
+    match initialize_sta() {
+        Ok(_) => {
+            return Ok(());
+        }
+        Err(err) => {
+            match err.code() {
+                // non-fatal results: see https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex#return-value
+                S_FALSE => {
+                    debug!("Thread already initialized in STA mode");
+                    return Ok(());
+                }
+                RPC_E_CHANGED_MODE => {
+                    warn!("Thread already initialized in a non-STA mode, continuing");
+                    return Ok(());
+                }
+                // fatal errors
+                _ => { return Err(Box::new(err)); }
+            }
+        }
+    };
 }
 
 pub fn do_get_device_cnt() -> Res<u32> {
@@ -247,7 +266,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
         // only aligning to frames
         frame_bytes
     };
-    let align_segment_ns00 = align_segment_bytes as f64 * 10_000_000.0 / rate  as f64;
+    let align_segment_ns00 = align_segment_bytes as f64 * 10_000_000.0 / rate as f64;
 
     // aligning
     let align_segments = ((approx_period_ns00 as f64 / align_segment_ns00) + 0.5) as i64;
