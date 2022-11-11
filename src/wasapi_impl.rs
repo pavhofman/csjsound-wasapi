@@ -331,6 +331,12 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
     let _innerhandle = thread::Builder::new()
         .name(format!("Wasapi{}Inner", dir).to_string())
         .spawn(move || {
+            // new thread requires initializing wasapi (STA)
+            if let Err(err) = do_initialize_wasapi() {
+                let msg = format!("{}: error: {}", &dir_cloned, err);
+                tx_state_dev.send(DeviceState::Error(msg)).unwrap_or(());
+                return;
+            }
             let (_device, audio_client, handle, client_buffer_frames) =
                 match device_open(
                     &device_id_cloned,

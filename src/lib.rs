@@ -160,6 +160,10 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 (env: JNIEnv, clazz: JClass, deviceID: JString, isSource: jboolean, formatsVec: JObject) {
+    if let Err(err) = do_initialize_wasapi() {
+        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
+        return;
+    }
     let deviceIDStr = get_string(env, deviceID);
 
     let formats = match do_get_formats(deviceIDStr, &get_direction(isSource)) {
@@ -210,6 +214,10 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
 (env: JNIEnv, _clazz: JClass, deviceID: JString, isSource: jboolean,
  _enc: jint, rate: jint, sampleSignBits: jint, frameBytes: jint, channels: jint,
  _isSigned: jboolean, _isBigEndian: jboolean, bufferBytes: jint) -> jlong {
+    if let Err(err) = do_initialize_wasapi() {
+        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
+        return 0;
+    }
     let direction = get_direction(isSource);
     debug!("{} [{}]: Opening {} device", function_name!(), get_thread_name(env), &direction);
     let deviceIDStr = get_string(env, deviceID);
@@ -443,6 +451,11 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_nGe
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nGetMixerCnt
 (env: JNIEnv, _clazz: JClass) -> jint {
     trace!("{}", function_name!());
+    if let Err(err) = do_initialize_wasapi() {
+        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
+        return 0;
+    }
+
     let cnt = match do_get_device_cnt() {
         Ok(cnt) => cnt,
         Err(e) => {
@@ -466,6 +479,11 @@ JNIEXPORT jobject JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCreateMixerInfo
 (env: JNIEnv, _clazz: JClass, idx: jint) -> jobject {
     trace!("{}", function_name!());
+    if let Err(err) = do_initialize_wasapi() {
+        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
+        return JObject::null().into_inner();
+    }
+
     let desc = match do_get_mixer_desc(idx as u32) {
         Ok(desc) => desc,
         Err(err) => {
