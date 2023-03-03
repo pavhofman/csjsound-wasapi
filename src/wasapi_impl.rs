@@ -851,7 +851,6 @@ fn playback_loop(
         if sync.exit_signal.load(Ordering::Relaxed) {
             debug!("PB INNER: Exiting inner loop");
             audio_client.stop_stream()?;
-            running = false;
             sync.exit_signal.store(false, Ordering::Relaxed);
             //file.flush();
             return Ok(());
@@ -883,7 +882,6 @@ fn playback_loop(
                 error!("{}", msg);
                 if running {
                     audio_client.stop_stream()?;
-                    running = false;
                 }
                 return Err(DeviceError::new(msg).into());
             }
@@ -904,7 +902,6 @@ fn playback_loop(
             if handle.wait_for_event(1000).is_err() {
                 error!("PB INNER: Error on playback, stopping stream");
                 audio_client.stop_stream()?;
-                running = false;
                 return Err(DeviceError::new("PB INNER: Error on playback").into());
             }
             trace!("PB INNER: waited for event: {:?}", now.elapsed());
@@ -928,10 +925,10 @@ fn playback_loop(
                     buffer_free_frames as f64 / samplerate as f64
                 );
                 if running {
+                    // restarting the stream
                     audio_client.stop_stream()?;
                     audio_client.reset_stream()?;
                     audio_client.start_stream()?;
-                    running = true;
                 }
             }
         }
@@ -1024,7 +1021,6 @@ fn capture_loop(
         if sync.exit_signal.load(Ordering::Relaxed) {
             debug!("CAPT INNER: Exiting inner loop");
             audio_client.stop_stream()?;
-            running = false;
             sync.exit_signal.store(false, Ordering::Relaxed);
             return Ok(());
         }
@@ -1122,23 +1118,20 @@ fn capture_loop(
             let prevtime = device_prevtime.unwrap();
             //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
             //println!("{}",prev_inst.elapsed().as_micros());
-            trace!(
-            "CAPT INNER: Device time grew by {} s",
-            device_time - prevtime
-        );
+            trace!("CAPT INNER: Device time grew by {} s", device_time - prevtime);
             if available_frames > 0 && (device_time - prevtime) > 1.5 * (available_frames as f64 / samplerate as f64) as f64 {
                 warn!(
-                "CAPT INNER: Missing event! Interval {} s, expected {} s",
-                device_time - prevtime,
-                available_frames as f64 / samplerate as f64
-            );
-                if running {
-                    // warn!("CAPT INNER: Resetting stream");
-                    // audio_client.stop_stream()?;
-                    // audio_client.reset_stream()?;
-                    // audio_client.start_stream()?;
-                    running = true;
-                }
+                    "CAPT INNER: Missing event! Interval {} s, expected {} s",
+                    device_time - prevtime,
+                    available_frames as f64 / samplerate as f64
+                );
+                // if running {
+                //     // warn!("CAPT INNER: Resetting stream");
+                //     // audio_client.stop_stream()?;
+                //     // audio_client.reset_stream()?;
+                //     // audio_client.start_stream()?;
+                //     // running = true;
+                // }
             }
         }
         device_prevtime = Some(device_time);
