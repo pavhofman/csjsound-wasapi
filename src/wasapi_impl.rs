@@ -1016,13 +1016,21 @@ fn capture_loop(
                 running = false;
             }
             sync.stop_signal.store(false, Ordering::Relaxed);
-            // staying in the loop
+            // staying in the loop with running=false
+            continue;
         }
         if sync.exit_signal.load(Ordering::Relaxed) {
             debug!("CAPT INNER: Exiting inner loop");
             audio_client.stop_stream()?;
             sync.exit_signal.store(false, Ordering::Relaxed);
             return Ok(());
+        }
+
+        if !running {
+            // Stopped but not exiting: must stay in the capture loop but cannot read from the device.
+            // Shortly wait to avoid CPU hogging and continue looping
+            sleep(Duration::from_millis(2));
+            continue;
         }
 
         trace!("CAPT INNER: loop spent outside of wait_for_event {:?}", now.elapsed());
