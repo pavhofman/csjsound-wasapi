@@ -1055,6 +1055,24 @@ fn capture_loop(
             inactive = false;
         }
 
+        // while waiting for event (the largest wait in the loop), stop/exit signals could have arrived. Must check again
+        if sync.stop_signal.load(Ordering::Relaxed) {
+            debug!("CAPT INNER: Stopping device");
+            if running {
+                audio_client.stop_stream()?;
+                running = false;
+            }
+            sync.stop_signal.store(false, Ordering::Relaxed);
+            // staying in the loop with running=false
+            continue;
+        }
+        if sync.exit_signal.load(Ordering::Relaxed) {
+            debug!("CAPT INNER: Exiting inner loop");
+            audio_client.stop_stream()?;
+            sync.exit_signal.store(false, Ordering::Relaxed);
+            return Ok(());
+        }
+
         // empty buffers are received from the main thread to avoid costly allocation in the inner loop
         let mut data = match saved_buffer {
             Some(buf) => {
