@@ -1098,11 +1098,11 @@ fn capture_loop(
             warn!("CAPT INNER: device reported a timestamp error");
         }
 
-        trace!("CAPT INNER: Sending chunk to main queue containing {} items", sync.tx_dev.len());
+        trace!("CAPT INNER: Sending a new chunk to main queue which contains {} unconsumed chunks", sync.tx_dev.len());
         match sync.tx_dev.try_send((chunk_nbr, data)) {
             Ok(()) => {}
             Err(TrySendError::Full((nbr, data))) => {
-                debug!("CAPT INNER: Outer side not consuming chunks, dropping captured chunk {}", nbr);
+                debug!("CAPT INNER: Outer side not consuming chunks, dropping the captured chunk {}", nbr);
                 saved_buffer = Some(data);
             }
             Err(TrySendError::Disconnected(_)) => {
