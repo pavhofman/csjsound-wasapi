@@ -40,6 +40,7 @@ pub struct RuntimeData {
     stop_signal: Arc<AtomicBool>,
     exit_signal: Arc<AtomicBool>,
     capt_last_chunk_nbr: u64,
+    capt_flushed_cnt: usize,
     //outer_file: Box<dyn Write>,
 }
 
@@ -437,6 +438,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
         stop_signal,
         exit_signal,
         capt_last_chunk_nbr: 0,
+        capt_flushed_cnt: 0,
         //outer_file: File::create("outer.raw").map(|f| Box::new(f) as Box<dyn Write>).unwrap(),
     };
 
@@ -583,7 +585,10 @@ pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, da
         match rtd.capt_rx_dev.as_ref().unwrap().recv() {
             Ok((chunk_nbr, data)) => {
                 trace!("CAPT: got chunk nbr {}, long {} bytes", chunk_nbr, data.len());
-                expected_chunk_nbr += 1;
+                // 1 new + flushed in the meantime
+                expected_chunk_nbr += 1 + rtd.capt_flushed_cnt as u64;
+                // resetting
+                rtd.capt_flushed_cnt = 0;
                 if chunk_nbr > expected_chunk_nbr {
                     warn!("CAPT: Samples were dropped, missing {} buffers", chunk_nbr - expected_chunk_nbr);
                     expected_chunk_nbr = chunk_nbr;
@@ -684,14 +689,17 @@ pub fn do_drain(rtd: &RuntimeData) {
     }
 }
 
-pub fn do_flush(rtd: &RuntimeData) {
+pub fn do_flush(rtd: &mut RuntimeData) {
     debug!("flushing device {}", rtd.device_name);
     // consuming all chunks in the interthread buffer
-    if rtd.dir == Direction::Render {
-        let _ = rtd.play_draining_rx_dev.as_ref().unwrap().try_iter().count();
+    let cnt = if rtd.dir == Direction::Render {
+        rtd.play_draining_rx_dev.as_ref().unwrap().try_iter().count()
     } else {
-        let _ = rtd.capt_rx_dev.as_ref().unwrap().try_iter().count();
-    }
+        let cnt = rtd.capt_rx_dev.as_ref().unwrap().try_iter().count();
+        rtd.capt_flushed_cnt += cnt;
+        cnt
+    };
+    trace!("flushed {} chunks from device {}", cnt, rtd.device_name);
 }
 
 fn check_direction(device_dir: &Direction, checked_dir: &Direction, device_id: &str, fn_name: &str) -> Res<()> {
@@ -1133,9 +1141,11 @@ fn capture_loop(
             warn!("CAPT INNER: device reported a timestamp error");
         }
 
-        trace!("CAPT INNER: Sending a new chunk to main queue which contains {} unconsumed chunks", sync.tx_dev.len());
+        trace!("CAPT INNER: Sending a new chunk nbr. {} to main queue which contains {} unconsumed chunks", chunk_nbr, sync.tx_dev.len());
         match sync.tx_dev.try_send((chunk_nbr, data)) {
-            Ok(()) => {}
+            Ok(()) => {
+                trace!("CAPT INNER: Chunk nbr. {} sent OK", chunk_nbr);
+            }
             Err(TrySendError::Full((nbr, data))) => {
                 debug!("CAPT INNER: Outer side not consuming chunks, dropping the captured chunk {}", nbr);
                 saved_buffer = Some(data);
