@@ -878,12 +878,21 @@ fn playback_loop(
                 None
             }
             Err(RecvTimeoutError::Disconnected) => {
-                let msg = "PB INNER: data channel is closed";
-                error!("{}", msg);
-                if running {
+                // while inner was waiting, the outer loop could have been closed
+                if sync.exit_signal.load(Ordering::Relaxed) {
+                    debug!("PB INNER: Exiting inner loop");
                     audio_client.stop_stream()?;
+                    sync.exit_signal.store(false, Ordering::Relaxed);
+                    //file.flush();
+                    return Ok(());
+                } else {
+                    let msg = "PB INNER: data channel is closed although no exit was requested";
+                    error!("{}", msg);
+                    if running {
+                        audio_client.stop_stream()?;
+                    }
+                    return Err(DeviceError::new(msg).into());
                 }
-                return Err(DeviceError::new(msg).into());
             }
         };
         if chunk.is_some() {
