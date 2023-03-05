@@ -299,11 +299,14 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
     let (capt_tx_prealloc, capt_rx_prealloc) = if is_playback {
         (None, None)
     } else {
-        let (tx, rx) = bounded(chunks + 2);
+        let prealloc_chunks = 2 * chunks;
+        // no need to limit the channel size
+        let (tx, rx) = unbounded();
         // filling the channel with preallocated chunks
         // estimated_chunk_frames is just an estimate, keeping marging for possibly larger chunk_frames
         let prealloc_chunk_bytes = (1.5 * estimated_chunk_frames as f32 * frame_bytes as f32) as usize;
-        for _ in 0..(chunks + 2) {
+        debug!("CAPT: Preallocating {} chunks", prealloc_chunks);
+        for _ in 0..(prealloc_chunks) {
             let prealloc_chunk = vec![0u8; prealloc_chunk_bytes];
             tx.send(prealloc_chunk).unwrap();
         }
