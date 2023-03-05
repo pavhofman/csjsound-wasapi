@@ -1106,7 +1106,24 @@ fn capture_loop(
             }
             None => {
                 trace!("CAPT INNER: Getting preallocated chunk from return queue containing {} items", sync.rx_prealloc.len());
-                sync.rx_prealloc.recv().unwrap()
+                match sync.rx_prealloc.recv() {
+                    Ok(buf) => {buf}
+                    Err(err) => {
+                        // If rx_prealloc was for some reason waiting for returned chunks and the device was closed in the mean time,
+                        // RecvError would be thrown.
+                        // Checking for exit signal to ignore this error condition.
+                        if sync.exit_signal.load(Ordering::Relaxed) {
+                            debug!("CAPT INNER: Exiting inner loop");
+                            audio_client.stop_stream()?;
+                            sync.exit_signal.store(false, Ordering::Relaxed);
+                            return Ok(());
+                        } else {
+                            // real error
+                            error!("{}", err.to_string());
+                            return Err(Box::new(err));
+                        }
+                    }
+                }
             }
         };
 
