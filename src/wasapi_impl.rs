@@ -698,7 +698,12 @@ pub fn do_flush(rtd: &mut RuntimeData) {
     let cnt = if rtd.dir == Direction::Render {
         rtd.play_draining_rx_dev.as_ref().unwrap().try_iter().count()
     } else {
-        let cnt = rtd.capt_rx_dev.as_ref().unwrap().try_iter().count();
+        let mut cnt = 0;
+        // received buffers must be returned to the prealloc channel
+        for (_chunk_nbr, data) in rtd.capt_rx_dev.as_ref().unwrap().try_iter() {
+            rtd.capt_tx_prealloc.as_ref().unwrap().send(data).unwrap();
+            cnt += 1;
+        }
         rtd.capt_flushed_cnt += cnt;
         cnt
     };
