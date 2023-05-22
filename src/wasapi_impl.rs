@@ -737,11 +737,11 @@ pub fn device_open(
     let wvformats = get_possible_formats(8 * frame_bytes / channels, validbits, rate, channels);
     let wvformat = match find_supported_format(&dev_name, &audio_client, wvformats) {
         Some(ok_wvformat) => {
-            debug!("%s: Opening device {}: will use format {:?}", dev_name, ok_wvformat);
+            debug!("Opening {} device {}: will use format {:?}", dir, dev_name, ok_wvformat);
             ok_wvformat
         }
         None => {
-            let msg = format!("Opening device {}: no supported format found", dev_name);
+            let msg = format!("Opening {} device {}: no supported format found", dir, dev_name);
             return Err(msg.into());
         }
     };
