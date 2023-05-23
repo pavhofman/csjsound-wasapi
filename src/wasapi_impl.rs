@@ -566,24 +566,39 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
     Ok(data_len)
 }
 
-pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, data_len: usize) -> Res<usize> {
-    trace!("CAPT: do_read: input_buffer {} bytes, offset {} bytes, reading {} bytes", input_buffer.len(), offset, data_len);
-    let chunk_bytes = rtd.chunk_frames * rtd.frame_bytes;
+pub fn do_read(rtd: &mut RuntimeData, out_buffer: &mut [u8], offset: usize, data_len: usize) -> Res<usize> {
+    trace!("CAPT: do_read: input_buffer {} bytes, offset {} bytes, reading {} bytes", out_buffer.len(), offset, data_len);
     let mut read_len = 0;
     let mut expected_chunk_nbr = rtd.capt_last_chunk_nbr;
-    let buffer = &mut input_buffer[offset..(offset + data_len)];
+    let buffer = &mut out_buffer[offset..(offset + data_len)];
 
     // copying leftovers if any to the beginning of the output java_buffer
     let mut leftovers_pos = rtd.leftovers_pos.load(Ordering::Relaxed);
     if leftovers_pos > 0 {
-        buffer[0..leftovers_pos].copy_from_slice(&rtd.leftovers[0..leftovers_pos]);
-        read_len += leftovers_pos;
-        // cleared
-        leftovers_pos = 0;
+        // some leftovers available
+        if leftovers_pos <= data_len {
+            trace!("CAPT: copying all {} leftover bytes to out buffer", leftovers_pos);
+            // complete leftovers fit data_len, copying whole leftovers
+            buffer[0..leftovers_pos].copy_from_slice(&rtd.leftovers[0..leftovers_pos]);
+            read_len += leftovers_pos;
+            // cleared
+            leftovers_pos = 0;
+        } else {
+            trace!("CAPT: copying only data_len {} from total {} leftover bytes to out buffer",
+                data_len, leftovers_pos);
+            // copying only data_len from leftovers
+            buffer[0..data_len].copy_from_slice(&rtd.leftovers[0..data_len]);
+            // shifting remaining leftovers to start for next do_read
+            rtd.leftovers.copy_within(data_len.., 0);
+            leftovers_pos = leftovers_pos - data_len;
+            trace!("CAPT: kept {} leftover bytes for the next do_read()", leftovers_pos);
+            // out buffer is filled up
+            read_len = data_len;
+        }
     }
 
     // reading chunks from the inner loop
-    while read_len <= data_len {
+    while read_len < data_len {
         // fully blocking
         match rtd.capt_rx_dev.as_ref().unwrap().recv() {
             Ok((chunk_nbr, data)) => {
@@ -596,19 +611,33 @@ pub fn do_read(rtd: &mut RuntimeData, input_buffer: &mut [u8], offset: usize, da
                     warn!("CAPT: Samples were dropped, missing {} buffers", chunk_nbr - expected_chunk_nbr);
                     expected_chunk_nbr = chunk_nbr;
                 }
-                if read_len + chunk_bytes <= data_len {
-                    // copying whole chunk to output_buffer
-                    buffer[read_len..read_len + chunk_bytes].copy_from_slice(&data[0..chunk_bytes]);
-                } else {
-                    //copying what fits to output_buffer
-                    let available_bytes = data_len - read_len;
-                    buffer[read_len..].copy_from_slice(&data[0..available_bytes]);
-                    // rest goes to leftovers (both buffer are chunk_bytes long)
-                    leftovers_pos = chunk_bytes - available_bytes;
-                    rtd.leftovers[0..leftovers_pos].copy_from_slice(&data[available_bytes..]);
+                let chunk_bytes = data.len();
+                let expected_chunk_bytes_for_exclusive = rtd.chunk_frames * rtd.frame_bytes;
+                if chunk_bytes != expected_chunk_bytes_for_exclusive {
+                    warn!("CAPT: received chunk bytes {} do not correspond to expected chunk bytes {} for EXCLUSIVE access!!",
+                        chunk_bytes, expected_chunk_bytes_for_exclusive);
                 }
-                read_len += chunk_bytes;
-                // Return the buffer to the queue
+
+                let available_space_bytes = data_len - read_len;
+                if chunk_bytes <= available_space_bytes {
+                    trace!("CAPT: copying the whole received chunk of {} bytes to the out buffer, starting from position {} (offset-adjusted)",
+                        chunk_bytes, read_len);
+                    buffer[read_len..(read_len + chunk_bytes)].copy_from_slice(&data[0..chunk_bytes]);
+                    read_len += chunk_bytes;
+                } else {
+                    //copying whatever fits to output_buffer
+                    trace!("CAPT: copying only {} bytes of the received chunk to fill up the out buffer, starting from position {} (offset-adjusted)",
+                        available_space_bytes, read_len);
+                    buffer[read_len..].copy_from_slice(&data[0..available_space_bytes]);
+                    // out buffer is filled up
+                    read_len = data_len;
+                    // the rest goes to leftovers
+                    leftovers_pos = chunk_bytes - available_space_bytes;
+                    trace!("CAPT: copying the remaining {} bytes of the received chunk to leftovers", leftovers_pos);
+                    rtd.leftovers[0..leftovers_pos].copy_from_slice(&data[available_space_bytes..]);
+                }
+
+                // Return the received buffer to the queue
                 rtd.capt_tx_prealloc.as_ref().unwrap().send(data).unwrap();
             }
             Err(err) => {
@@ -1107,7 +1136,7 @@ fn capture_loop(
             None => {
                 trace!("CAPT INNER: Getting preallocated chunk from return queue containing {} items", sync.rx_prealloc.len());
                 match sync.rx_prealloc.recv() {
-                    Ok(buf) => {buf}
+                    Ok(buf) => { buf }
                     Err(err) => {
                         // If rx_prealloc was for some reason waiting for returned chunks and the device was closed in the mean time,
                         // RecvError would be thrown.
