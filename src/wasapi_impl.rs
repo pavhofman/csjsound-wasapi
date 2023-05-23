@@ -522,6 +522,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
         // allocating new chunk
         let mut chunk: Vec<u8> = Vec::with_capacity(chunk_bytes);
         unsafe { chunk.set_len(chunk_bytes); }
+        trace!("PB: new chunk with leftovers and data: length: {}, chunk_bytes: {}", chunk.len(), chunk_bytes);
 
         chunk[0..leftovers_pos].copy_from_slice(&rtd.leftovers[0..leftovers_pos]);
         let bytes_from_data = chunk_bytes - leftovers_pos;
@@ -544,7 +545,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
         // allocating new chunk
         let mut chunk: Vec<u8> = Vec::with_capacity(chunk_bytes);
         unsafe { chunk.set_len(chunk_bytes); }
-        trace!("PB: chunk length: {}, chunk_bytes: {}", chunk.len(), chunk_bytes);
+        trace!("PB: new chunk with data only: length: {}, chunk_bytes: {}", chunk.len(), chunk_bytes);
 
         chunk.copy_from_slice(&data_to_write[0..chunk_bytes]);
         match rtd.play_tx_dev.as_ref().unwrap().send(chunk) {
@@ -558,7 +559,7 @@ pub fn do_write(rtd: &mut RuntimeData, java_buffer: &[u8], offset: usize, data_l
     }
     if data_to_write.len() > 0 {
         // storing the leftovers
-        trace!("PB: leftovers length: {}, data_to_write length: {}", rtd.leftovers.len(), data_to_write.len());
+        trace!("PB: storing to leftovers: leftovers length: {}, data_to_write length: {}", rtd.leftovers.len(), data_to_write.len());
         leftovers_pos = data_to_write.len();
         rtd.leftovers[0..leftovers_pos].copy_from_slice(data_to_write);
     }
