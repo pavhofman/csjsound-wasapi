@@ -197,7 +197,7 @@ fn get_device_formats(dev: Device) -> Res<Vec<Format>> {
     let dev_name = dev.get_friendlyname()?;
     let client = dev.get_iaudioclient()?;
     let mut supported_validbits: HashSet<i32> = HashSet::new();
-    for (_format, wvformats) in &*WV_FMTS_BY_FORMAT.lock().unwrap() {
+    for (_format, wvformats) in &*WV_FMTS_BY_FORMAT.lock()? {
         //adding only first supported wvformat for the given format
 
         for wvformat in wvformats {
@@ -308,7 +308,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
         debug!("CAPT: Preallocating {} chunks", prealloc_chunks);
         for _ in 0..(prealloc_chunks) {
             let prealloc_chunk = vec![0u8; prealloc_chunk_bytes];
-            tx.send(prealloc_chunk).unwrap();
+            tx.send(prealloc_chunk)?;
         }
         (Some(tx), Some(rx))
     };
@@ -352,7 +352,14 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
                     period_ns00,
                 ) {
                     Ok((_device, audio_client, handle)) => {
-                        let client_buffer_frames = audio_client.get_bufferframecount().unwrap() as usize;
+                        let client_buffer_frames = match audio_client.get_bufferframecount() {
+                            Ok(frames) => { frames }
+                            Err(err) => {
+                                let msg = format!("PB: error: {}", err);
+                                tx_state_dev.send(DeviceState::Error(msg)).unwrap_or(());
+                                return;
+                            }
+                        } as usize;
                         tx_state_dev.send(DeviceState::Ok(client_buffer_frames)).unwrap_or(());
                         (_device, audio_client, handle, client_buffer_frames)
                     }
@@ -406,8 +413,7 @@ pub fn do_open_dev(device_id: String, dir: &Direction, rate: usize, validbits: u
                 error!("{}", msg);
                 tx_state_dev.send(DeviceState::Error(msg)).unwrap_or(());
             }
-        })
-        .unwrap();
+        })?;
     let real_chunk_frames = match rx_state_dev.recv() {
         Ok(DeviceState::Ok(frames)) => {
             frames
@@ -639,7 +645,7 @@ pub fn do_read(rtd: &mut RuntimeData, out_buffer: &mut [u8], offset: usize, data
                 }
 
                 // Return the received buffer to the queue
-                rtd.capt_tx_prealloc.as_ref().unwrap().send(data).unwrap();
+                rtd.capt_tx_prealloc.as_ref().unwrap().send(data)?;
             }
             Err(err) => {
                 error!("{}", err.to_string());
@@ -722,7 +728,7 @@ pub fn do_drain(rtd: &RuntimeData) {
     }
 }
 
-pub fn do_flush(rtd: &mut RuntimeData) {
+pub fn do_flush(rtd: &mut RuntimeData) -> Res<()> {
     debug!("flushing device {}", rtd.device_name);
     // consuming all chunks in the interthread buffer
     let cnt = if rtd.dir == Direction::Render {
@@ -731,13 +737,14 @@ pub fn do_flush(rtd: &mut RuntimeData) {
         let mut cnt = 0;
         // received buffers must be returned to the prealloc channel
         for (_chunk_nbr, data) in rtd.capt_rx_dev.as_ref().unwrap().try_iter() {
-            rtd.capt_tx_prealloc.as_ref().unwrap().send(data).unwrap();
+            rtd.capt_tx_prealloc.as_ref().unwrap().send(data)?;
             cnt += 1;
         }
         rtd.capt_flushed_cnt += cnt;
         cnt
     };
     trace!("flushed {} chunks from device {}", cnt, rtd.device_name);
+    Ok(())
 }
 
 fn check_direction(device_dir: &Direction, checked_dir: &Direction, device_id: &str, fn_name: &str) -> Res<()> {
@@ -764,7 +771,7 @@ pub fn device_open(
     let sharemode = ShareMode::Exclusive;
     let (device, dev_name, mut audio_client) = get_device_details(&device_id, &dir)?;
 
-    let wvformats = get_possible_formats(8 * frame_bytes / channels, validbits, rate, channels);
+    let wvformats = get_possible_formats(8 * frame_bytes / channels, validbits, rate, channels)?;
     let wvformat = match find_supported_format(&dev_name, &audio_client, wvformats) {
         Some(ok_wvformat) => {
             debug!("Opening {} device {}: will use format {:?}", dir, dev_name, ok_wvformat);

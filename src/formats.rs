@@ -2,6 +2,7 @@ use lazy_static::lazy_static;
 use wasapi::{SampleType, WaveFormat};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use crate::{Res};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Format {
@@ -79,7 +80,7 @@ const CHANNEL_MASKS: [&[u32]; 8] = [
     &[SPEAKER_7POINT1_SURROUND, SPEAKER_7POINT1],
 ];
 
-pub fn init_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec<usize>, accepted_combination: T)
+pub fn init_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec<usize>, accepted_combination: T) ->Res<()>
     where T: Fn(usize, usize) -> bool {
     let valid_store_bits_variants: Vec<(usize, usize)> = vec!((16, 16), (24, 24), (24, 32), (32, 32));
     for rate in rate_variants {
@@ -93,15 +94,16 @@ pub fn init_format_variants<T>(rate_variants: Vec<usize>, channels_variants: Vec
                         channels: channels as i32,
                         rate: rate as i32,
                     };
-                    let mut map = WV_FMTS_BY_FORMAT.lock().unwrap();
-                    map.insert(fmt, get_possible_formats(storebits, validbits, rate, channels));
+                    let mut map = WV_FMTS_BY_FORMAT.lock()?;
+                    map.insert(fmt, get_possible_formats(storebits, validbits, rate, channels)?);
                 }
             }
         }
     }
+    Ok(())
 }
 
-pub fn get_possible_formats(storebits: usize, validbits: usize, rate: usize, channels: usize) -> Vec<WaveFormat> {
+pub fn get_possible_formats(storebits: usize, validbits: usize, rate: usize, channels: usize) -> Res<Vec<WaveFormat>> {
     let mut wvformats = Vec::new();
 
     //WAVEXTENSIBLE versions:
@@ -136,7 +138,7 @@ pub fn get_possible_formats(storebits: usize, validbits: usize, rate: usize, cha
 
     // adding WAVEX format for legacy formats (see https://docs.microsoft.com/en-us/windows/win32/coreaudio/device-formats#specifying-the-device-format)
     if wvformat.get_nchannels() <= 2 && wvformat.get_bitspersample() <= 16 {
-        wvformats.push(wvformat.to_waveformatex().unwrap());
+        wvformats.push(wvformat.to_waveformatex()?);
     }
-    wvformats
+    Ok(wvformats)
 }

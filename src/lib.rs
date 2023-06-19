@@ -3,8 +3,10 @@
 extern crate core;
 
 use core::slice;
+use std::any::Any;
 use std::error::Error;
 use std::fs::File;
+use std::panic;
 
 use ::function_name::named;
 use fast_log::appender::{Command, FastLogRecord, RecordFormat};
@@ -87,68 +89,71 @@ impl RecordFormat for LogFormat {
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
 (env: JNIEnv, _clazz: JClass, logLevelID: jint, logTarget: JString,
  jrates: jintArray, jchannels: jintArray, maxRatesLimit: jint, maxChannelsLimit: jint) -> jboolean {
-    // logging initialization
-    let log_target_str = get_string(env, logTarget);
-    let log_level: LevelFilter = match logLevelID as usize {
-        // same constants as in the java provider
-        0 => LevelFilter::Error,
-        1 => LevelFilter::Warn,
-        2 => LevelFilter::Info,
-        3 => LevelFilter::Debug,
-        4 => LevelFilter::Trace,
-        _ => LevelFilter::Error,
-    };
+    let panicResult = panic::catch_unwind(|| {
+        // logging initialization
+        let log_target_str = get_string(env, logTarget);
+        let log_level: LevelFilter = match logLevelID as usize {
+            // same constants as in the java provider
+            0 => LevelFilter::Error,
+            1 => LevelFilter::Warn,
+            2 => LevelFilter::Info,
+            3 => LevelFilter::Debug,
+            4 => LevelFilter::Trace,
+            _ => LevelFilter::Error,
+        };
 
-    let mut config = Config::new().level(log_level).format(LogFormat { display_line_level: LevelFilter::Off });
+        let mut config = Config::new().level(log_level).format(LogFormat { display_line_level: LevelFilter::Off });
 
-    config = match log_target_str.as_str() {
-        "stdout" => { config.console() }
-        "stderr" => { /* for now now stderr support */ config.console() }
-        other => {
-            // checking if the log file can be created
-            let _file = match File::create(other) {
-                Ok(file) => { file }
-                Err(err) => {
-                    error!("{} [{}]: Failed to create log file {}: {}", function_name!(), get_thread_name(env), other, err);
-                    return 0 as jboolean;
-                }
-            };
-            config.file(other)
-        }
-    };
-    fast_log::init(config).unwrap();
-    // logging ready
+        config = match log_target_str.as_str() {
+            "stdout" => { config.console() }
+            "stderr" => { /* for now now stderr support */ config.console() }
+            other => {
+                // checking if the log file can be created
+                let _file = match File::create(other) {
+                    Ok(file) => { file }
+                    Err(err) => {
+                        error!("{} [{}]: Failed to create log file {}: {}", function_name!(), get_thread_name(env), other, err);
+                        return 0 as jboolean;
+                    }
+                };
+                config.file(other)
+            }
+        };
+        fast_log::init(config).unwrap();
+        // logging ready
 
-    trace!("{}", function_name!());
-    info!("Initialized from thread: {}", get_thread_name(env));
+        trace!("{}", function_name!());
+        info!("Initialized from thread: {}", get_thread_name(env));
 
-    let rates = from_jint_array(env, jrates);
-    debug!("Received rates to test: {:?}", rates);
-    let channels = from_jint_array(env, jchannels);
-    debug!("Received channels to test: {:?}", channels);
+        let rates = from_jint_array(env, jrates);
+        debug!("Received rates to test: {:?}", rates);
+        let channels = from_jint_array(env, jchannels);
+        debug!("Received channels to test: {:?}", channels);
 
-    let accepted_combination: Box<dyn Fn(usize, usize) -> bool> = if maxChannelsLimit > 0 && maxRatesLimit > 0 {
-        // limits were assigned
-        debug!("Received max rate {} and max channels {} to limit test combinations", maxRatesLimit, maxChannelsLimit);
-        Box::new(|rate: usize, channels: usize| rate <= maxRatesLimit as usize || channels <= maxChannelsLimit as usize)
-    } else {
-        // no limits, all combinations accepted
-        debug!("Received no max rate and max channels limits, will test all combinations");
-        Box::new(|_rate: usize, _channels: usize| true)
-    };
+        let accepted_combination: Box<dyn Fn(usize, usize) -> bool> = if maxChannelsLimit > 0 && maxRatesLimit > 0 {
+            // limits were assigned
+            debug!("Received max rate {} and max channels {} to limit test combinations", maxRatesLimit, maxChannelsLimit);
+            Box::new(|rate: usize, channels: usize| rate <= maxRatesLimit as usize || channels <= maxChannelsLimit as usize)
+        } else {
+            // no limits, all combinations accepted
+            debug!("Received no max rate and max channels limits, will test all combinations");
+            Box::new(|_rate: usize, _channels: usize| true)
+        };
 
-    init_format_variants(rates, channels, accepted_combination);
+        init_format_variants(rates, channels, accepted_combination).unwrap();
 
-    return match do_initialize_wasapi() {
-        Ok(_) => {
-            info!("Lib initialized");
-            1 as jboolean
-        }
-        Err(err) => {
-            error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
-            0 as jboolean
-        }
-    };
+        return match do_initialize_wasapi() {
+            Ok(_) => {
+                info!("Lib initialized");
+                1 as jboolean
+            }
+            Err(err) => {
+                error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
+                0 as jboolean
+            }
+        };
+    });
+    return check_panic_result(env, panicResult, 0 as jboolean);
 }
 
 
@@ -160,45 +165,48 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetFormats
 (env: JNIEnv, clazz: JClass, deviceID: JString, isSource: jboolean, formatsVec: JObject) {
-    if let Err(err) = do_initialize_wasapi() {
-        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
-        return;
-    }
-    let deviceIDStr = get_string(env, deviceID);
-
-    let formats = match do_get_formats(deviceIDStr, &get_direction(isSource)) {
-        Ok(formats) => formats,
-        Err(err) => {
-            error!("{} [{}]: get_fmts failed: {:?}\n", function_name!(), get_thread_name(env), err);
+    let panicResult = panic::catch_unwind(|| {
+        if let Err(err) = do_initialize_wasapi() {
+            error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
             return;
         }
-    };
-    let signature = TypeSignature::from_str(&ADD_FORMAT_SIGNATURE).unwrap();
-    for format in formats {
-        /*
-            private static void addFormat(Vector<AudioFormat> v, int bits, int frameBytes, int channels,
-                                          int rate, int encoding, boolean isSigned, boolean isBigEndian)
-         */
-        match env.call_static_method_unchecked(clazz,
-                                               (clazz, ADD_FORMAT_METHOD, ADD_FORMAT_SIGNATURE),
-                                               signature.ret.clone(),
-                                               &[
-                                                   JValue::from(formatsVec),
-                                                   JValue::Int(format.validbits),
-                                                   JValue::Int(format.frame_bytes),
-                                                   JValue::Int(format.channels),
-                                                   JValue::Int(format.rate),
-                                                   JValue::Int(0), // fixed PCM
-                                                   JValue::from(true),
-                                                   JValue::from(false),
-                                               ]) {
-            Ok(_) => {}
+        let deviceIDStr = get_string(env, deviceID);
+
+        let formats = match do_get_formats(deviceIDStr, &get_direction(isSource)) {
+            Ok(formats) => formats,
             Err(err) => {
-                error!("{} [{}]: Calling method addFormat failed: {:?}\n", function_name!(), get_thread_name(env), err);
+                error!("{} [{}]: get_fmts failed: {:?}\n", function_name!(), get_thread_name(env), err);
                 return;
             }
+        };
+        let signature = TypeSignature::from_str(&ADD_FORMAT_SIGNATURE).unwrap();
+        for format in formats {
+            /*
+                private static void addFormat(Vector<AudioFormat> v, int bits, int frameBytes, int channels,
+                                              int rate, int encoding, boolean isSigned, boolean isBigEndian)
+             */
+            match env.call_static_method_unchecked(clazz,
+                                                   (clazz, ADD_FORMAT_METHOD, ADD_FORMAT_SIGNATURE),
+                                                   signature.ret.clone(),
+                                                   &[
+                                                       JValue::from(formatsVec),
+                                                       JValue::Int(format.validbits),
+                                                       JValue::Int(format.frame_bytes),
+                                                       JValue::Int(format.channels),
+                                                       JValue::Int(format.rate),
+                                                       JValue::Int(0), // fixed PCM
+                                                       JValue::from(true),
+                                                       JValue::from(false),
+                                                   ]) {
+                Ok(_) => {}
+                Err(err) => {
+                    error!("{} [{}]: Calling method addFormat failed: {:?}\n", function_name!(), get_thread_name(env), err);
+                    return;
+                }
+            }
         }
-    }
+    });
+    check_panic_result(env, panicResult, ());
 }
 
 
@@ -214,25 +222,28 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nOpen
 (env: JNIEnv, _clazz: JClass, deviceID: JString, isSource: jboolean,
  _enc: jint, rate: jint, sampleSignBits: jint, frameBytes: jint, channels: jint,
  _isSigned: jboolean, _isBigEndian: jboolean, bufferBytes: jint) -> jlong {
-    if let Err(err) = do_initialize_wasapi() {
-        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
-        return 0;
-    }
-    let direction = get_direction(isSource);
-    debug!("{} [{}]: Opening {} device", function_name!(), get_thread_name(env), &direction);
-    let deviceIDStr = get_string(env, deviceID);
-    let rtd: RuntimeData = match do_open_dev(deviceIDStr, &direction, rate as usize,
-                                             sampleSignBits as usize, frameBytes as usize,
-                                             channels as usize, bufferBytes as usize) {
-        Ok(rtd) => rtd,
-        Err(err) => {
-            error!("{} [{}]: open_dev failed: {:?}\n", function_name!(), get_thread_name(env), err);
-            // SimpleDataLine.doOpen checks for 0 (= NULL)
+    let panicResult = panic::catch_unwind(|| {
+        if let Err(err) = do_initialize_wasapi() {
+            error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
             return 0;
         }
-    };
-    // getting the pointer
-    get_rtd_box_ptr(rtd)
+        let direction = get_direction(isSource);
+        debug!("{} [{}]: Opening {} device", function_name!(), get_thread_name(env), &direction);
+        let deviceIDStr = get_string(env, deviceID);
+        let rtd: RuntimeData = match do_open_dev(deviceIDStr, &direction, rate as usize,
+                                                 sampleSignBits as usize, frameBytes as usize,
+                                                 channels as usize, bufferBytes as usize) {
+            Ok(rtd) => rtd,
+            Err(err) => {
+                error!("{} [{}]: open_dev failed: {:?}\n", function_name!(), get_thread_name(env), err);
+                // SimpleDataLine.doOpen checks for 0 (= NULL)
+                return 0;
+            }
+        };
+        // getting the pointer
+        get_rtd_box_ptr(rtd)
+    });
+    return check_panic_result(env, panicResult, 0);
 }
 
 
@@ -245,13 +256,16 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStart
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStart
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    match do_start(rtd, &get_direction(isSource)) {
-        Ok(_) => {}
-        Err(err) => {
-            error!("{} [{}]: start failed: {:?}\n", function_name!(), get_thread_name(env), err);
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        match do_start(rtd, &get_direction(isSource)) {
+            Ok(_) => {}
+            Err(err) => {
+                error!("{} [{}]: start failed: {:?}\n", function_name!(), get_thread_name(env), err);
+            }
         }
-    }
+    });
+    check_panic_result(env, panicResult, ());
 }
 
 
@@ -264,13 +278,16 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nStop
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nStop
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    match do_stop(rtd, &get_direction(isSource)) {
-        Ok(_) => {}
-        Err(err) => {
-            error!("{} [{}]: stop failed: {:?}\n", function_name!(), get_thread_name(env), err);
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        match do_stop(rtd, &get_direction(isSource)) {
+            Ok(_) => {}
+            Err(err) => {
+                error!("{} [{}]: stop failed: {:?}\n", function_name!(), get_thread_name(env), err);
+            }
         }
-    }
+    });
+    check_panic_result(env, panicResult, ());
 }
 
 
@@ -283,17 +300,19 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nClose
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nClose
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) {
     trace!("{}", function_name!());
-
-    // need to release the allocated memory => getting the box
-    let rtd = get_rtd_box(nativePtr);
-    match do_close(&rtd, &get_direction(isSource)) {
-        Ok(_) => {}
-        Err(err) => {
-            error!("{} [{}]: closing failed: {:?}\n", function_name!(), get_thread_name(env), err);
+    let panicResult = panic::catch_unwind(|| {
+        // need to release the allocated memory => getting the box
+        let rtd = get_rtd_box(nativePtr);
+        match do_close(&rtd, &get_direction(isSource)) {
+            Ok(_) => {}
+            Err(err) => {
+                error!("{} [{}]: closing failed: {:?}\n", function_name!(), get_thread_name(env), err);
+            }
         }
-    }
-    // freeing rtd from heap
-    drop(rtd);
+        // freeing rtd from heap
+        drop(rtd);
+    });
+    check_panic_result(env, panicResult, ());
 }
 
 
@@ -306,19 +325,22 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nWrite
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nWrite
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, jData: jbyteArray, offset: jint, len: jint) -> jint {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    // warn - AutoPrimitiveArray disables GC in java until the array is dropped in rust
-    let jarr: AutoPrimitiveArray = env.get_primitive_array_critical(jData, ReleaseMode::NoCopyBack).unwrap();
-    let size = jarr.size().unwrap() as usize;
-    let items: &[u8] = unsafe { slice::from_raw_parts(jarr.as_ptr() as *const u8, size) };
-    let cnt = match do_write(rtd, items, offset as usize, len as usize) {
-        Ok(cnt) => cnt,
-        Err(e) => {
-            error!("{} [{}]: Writing failed: {:?}", function_name!(), get_thread_name(env), e);
-            return -1 as jint;
-        }
-    };
-    cnt as jint
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        // warn - AutoPrimitiveArray disables GC in java until the array is dropped in rust
+        let jarr: AutoPrimitiveArray = env.get_primitive_array_critical(jData, ReleaseMode::NoCopyBack).unwrap();
+        let size = jarr.size().unwrap() as usize;
+        let items: &[u8] = unsafe { slice::from_raw_parts(jarr.as_ptr() as *const u8, size) };
+        let cnt = match do_write(rtd, items, offset as usize, len as usize) {
+            Ok(cnt) => cnt,
+            Err(e) => {
+                error!("{} [{}]: Writing failed: {:?}", function_name!(), get_thread_name(env), e);
+                return -1 as jint;
+            }
+        };
+        cnt as jint
+    });
+    return check_panic_result(env, panicResult, -1);
 }
 
 
@@ -331,18 +353,21 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nRead
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nRead
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, jData: jbyteArray, offset: jint, len: jint) -> jint {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    let jarr: AutoPrimitiveArray = env.get_primitive_array_critical(jData, ReleaseMode::CopyBack).unwrap();
-    let size = jarr.size().unwrap() as usize;
-    let items: &mut [u8] = unsafe { slice::from_raw_parts_mut(jarr.as_ptr() as *mut u8, size) };
-    let cnt = match do_read(rtd, items, offset as usize, len as usize) {
-        Ok(cnt) => cnt,
-        Err(e) => {
-            error!("{} [{}]: Reading failed: {:?}", function_name!(), get_thread_name(env), e);
-            return -1 as jint;
-        }
-    };
-    cnt as jint
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        let jarr: AutoPrimitiveArray = env.get_primitive_array_critical(jData, ReleaseMode::CopyBack).unwrap();
+        let size = jarr.size().unwrap() as usize;
+        let items: &mut [u8] = unsafe { slice::from_raw_parts_mut(jarr.as_ptr() as *mut u8, size) };
+        let cnt = match do_read(rtd, items, offset as usize, len as usize) {
+            Ok(cnt) => cnt,
+            Err(e) => {
+                error!("{} [{}]: Reading failed: {:?}", function_name!(), get_thread_name(env), e);
+                return -1 as jint;
+            }
+        };
+        cnt as jint
+    });
+    return check_panic_result(env, panicResult, -1);
 }
 
 
@@ -356,16 +381,19 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBufferB
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
     let dir = get_direction(isSource);
     trace!("{} {}", function_name!(), dir);
-    let rtd = get_rtd(nativePtr);
-    let bytes = match do_get_buffer_bytes(rtd, &dir) {
-        Ok(size) => size,
-        Err(e) => {
-            error!("{} [{}]: Getting buffer_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
-            return 0 as jint;
-        }
-    };
-    trace!("{} {}: returning {}", function_name!(), dir, bytes);
-    bytes as jint
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        let bytes = match do_get_buffer_bytes(rtd, &dir) {
+            Ok(size) => size,
+            Err(e) => {
+                error!("{} [{}]: Getting buffer_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
+                return 0 as jint;
+            }
+        };
+        trace!("{} {}: returning {}", function_name!(), dir, bytes);
+        bytes as jint
+    });
+    return check_panic_result(env, panicResult, -1);
 }
 
 
@@ -376,10 +404,13 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nDrain
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nDrain
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong) {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong) {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    do_drain(rtd);
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        do_drain(rtd);
+    });
+    check_panic_result(env, panicResult, ());
 }
 
 
@@ -390,12 +421,16 @@ JNIEXPORT void JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nFlush
 #[named]
 #[no_mangle]
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nFlush
-(_env: JNIEnv, _clazz: JClass, nativePtr: jlong, _isSource: jboolean) {
+(env: JNIEnv, _clazz: JClass, nativePtr: jlong, _isSource: jboolean) {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    do_flush(rtd);
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        do_flush(rtd).unwrap_or_else(|err| {
+            error!("{} [{}]: failed: {:?}", function_name!(), get_thread_name(env),  err);
+        });
+    });
+    check_panic_result(env, panicResult, ());
 }
-
 
 /*
 JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBytes
@@ -407,17 +442,19 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetAvailBy
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean) -> jint {
     let dir = get_direction(isSource);
     trace!("{} {}", function_name!(), dir);
-
-    let rtd = get_rtd(nativePtr);
-    let bytes = match do_get_avail_bytes(rtd, &dir) {
-        Ok(size) => size,
-        Err(e) => {
-            error!("{} [{}]: Getting avail_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
-            return 0 as jint;
-        }
-    };
-    trace!("{} {}: returning {}", function_name!(), dir, bytes);
-    bytes as jint
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        let bytes = match do_get_avail_bytes(rtd, &dir) {
+            Ok(size) => size,
+            Err(e) => {
+                error!("{} [{}]: Getting avail_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
+                return 0 as jint;
+            }
+        };
+        trace!("{} {}: returning {}", function_name!(), dir, bytes);
+        return bytes as jint;
+    });
+    return check_panic_result(env, panicResult, -1);
 }
 
 
@@ -430,16 +467,19 @@ JNIEXPORT jlong JNICALL Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePo
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixer_nGetBytePos
 (env: JNIEnv, _clazz: JClass, nativePtr: jlong, isSource: jboolean, javaBytePos: jlong) -> jlong {
     trace!("{}", function_name!());
-    let rtd = get_rtd(nativePtr);
-    let bytes = match do_get_byte_pos(rtd, &get_direction(isSource), javaBytePos as u64) {
-        Ok(size) => size,
-        Err(e) => {
-            error!("{} [{}]: Getting avail_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
-            return 0 as jlong;
-        }
-    };
-    trace!("{}: returning {}", function_name!(), bytes);
-    bytes as jlong
+    let panicResult = panic::catch_unwind(|| {
+        let rtd = get_rtd(nativePtr);
+        let bytes = match do_get_byte_pos(rtd, &get_direction(isSource), javaBytePos as u64) {
+            Ok(size) => size,
+            Err(e) => {
+                error!("{} [{}]: Getting avail_bytes failed: {:?}", function_name!(), get_thread_name(env),  e);
+                return 0 as jlong;
+            }
+        };
+        trace!("{}: returning {}", function_name!(), bytes);
+        bytes as jlong
+    });
+    return check_panic_result(env, panicResult, -1);
 }
 
 /*
@@ -451,23 +491,28 @@ JNIEXPORT jint JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_nGe
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nGetMixerCnt
 (env: JNIEnv, _clazz: JClass) -> jint {
     trace!("{}", function_name!());
-    if let Err(err) = do_initialize_wasapi() {
-        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
-        return 0;
-    }
-
-    let cnt = match do_get_device_cnt() {
-        Ok(cnt) => cnt,
-        Err(e) => {
-            error!("{} [{}]: Getting DeviceCollection failed: {:?}", function_name!(), get_thread_name(env),  e);
-            return 0 as jint;
+    let panicResult = panic::catch_unwind(|| {
+        if let Err(err) = do_initialize_wasapi() {
+            error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
+            return 0;
         }
-    };
-    cnt as jint
+
+        let cnt = match do_get_device_cnt() {
+            Ok(cnt) => cnt,
+            Err(e) => {
+                error!("{} [{}]: Getting DeviceCollection failed: {:?}", function_name!(), get_thread_name(env),  e);
+                return 0 as jint;
+            }
+        };
+        cnt as jint
+    });
+    return check_panic_result(env, panicResult, -1);
 }
 
 
 const MIXER_INFO_CLASS: &'static str = "com/cleansine/sound/provider/SimpleMixerInfo";
+
+
 const MIXER_INFO_SIGNATURE: &'static str = "(ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
 
 /*
@@ -479,49 +524,52 @@ JNIEXPORT jobject JNICALL Java_com_cleansine_sound_provider_SimpleMixerProvider_
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nCreateMixerInfo
 (env: JNIEnv, _clazz: JClass, idx: jint) -> jobject {
     trace!("{}", function_name!());
-    if let Err(err) = do_initialize_wasapi() {
-        error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
-        return JObject::null().into_inner();
-    }
-
-    let desc = match do_get_mixer_desc(idx as u32) {
-        Ok(desc) => desc,
-        Err(err) => {
-            error!("{} [{}]: Getting MixerDesc for idx {} failed: {:?}", function_name!(), get_thread_name(env),  idx, err);
+    let panicResult = panic::catch_unwind(|| {
+        if let Err(err) = do_initialize_wasapi() {
+            error!("{} [{}]: WASAPI init failed: {}", function_name!(), get_thread_name(env), err);
             return JObject::null().into_inner();
         }
-    };
 
-    let info_cls = match env.find_class(MIXER_INFO_CLASS) {
-        Ok(c) => c,
-        Err(err) => {
-            error!("{} [{}]: info_cls class not found: {:?}\n", function_name!(), get_thread_name(env),  err);
-            return JObject::null().into_inner();
-        }
-    };
+        let desc = match do_get_mixer_desc(idx as u32) {
+            Ok(desc) => desc,
+            Err(err) => {
+                error!("{} [{}]: Getting MixerDesc for idx {} failed: {:?}", function_name!(), get_thread_name(env),  idx, err);
+                return JObject::null().into_inner();
+            }
+        };
 
-    let deviceID = env.new_string(desc.deviceID).unwrap();
-    let name = env.new_string(desc.name).unwrap();
-    let description = env.new_string(desc.description).unwrap();
-    let vendor = env.new_string("WASAPI").unwrap();
-    //idx, deviceID, desc.maxLines, name, vendor, description
-    let obj = match env.new_object(info_cls,
-                                   MIXER_INFO_SIGNATURE,
-                                   &[JValue::Int(idx),
-                                       JValue::from(deviceID),
-                                       JValue::Int(desc.max_lines as jint),
-                                       JValue::from(name),
-                                       JValue::from(vendor),
-                                       JValue::from(description)
-                                   ]) {
-        Ok(obj) => obj,
-        Err(err) => {
-            error!("{} [{}]: Cannot instantiate SimpleMixerInfo: {:?}", function_name!(), get_thread_name(env),  err);
-            return JObject::null().into_inner();
-        }
-    };
-    trace!("{} done.", function_name!());
-    obj.into_inner()
+        let info_cls = match env.find_class(MIXER_INFO_CLASS) {
+            Ok(c) => c,
+            Err(err) => {
+                error!("{} [{}]: info_cls class not found: {:?}\n", function_name!(), get_thread_name(env),  err);
+                return JObject::null().into_inner();
+            }
+        };
+
+        let deviceID = env.new_string(desc.deviceID).unwrap();
+        let name = env.new_string(desc.name).unwrap();
+        let description = env.new_string(desc.description).unwrap();
+        let vendor = env.new_string("WASAPI").unwrap();
+        //idx, deviceID, desc.maxLines, name, vendor, description
+        let obj = match env.new_object(info_cls,
+                                       MIXER_INFO_SIGNATURE,
+                                       &[JValue::Int(idx),
+                                           JValue::from(deviceID),
+                                           JValue::Int(desc.max_lines as jint),
+                                           JValue::from(name),
+                                           JValue::from(vendor),
+                                           JValue::from(description)
+                                       ]) {
+            Ok(obj) => obj,
+            Err(err) => {
+                error!("{} [{}]: Cannot instantiate SimpleMixerInfo: {:?}", function_name!(), get_thread_name(env),  err);
+                return JObject::null().into_inner();
+            }
+        };
+        trace!("{} done.", function_name!());
+        obj.into_inner()
+    });
+    return check_panic_result(env, panicResult, JObject::null().into_inner());
 }
 
 
@@ -629,4 +677,16 @@ fn get_thread_name(env: JNIEnv) -> String {
         }
     };
     return get_string(env, JString::from(name));
+}
+
+fn check_panic_result<T>(env: JNIEnv, result: Result<T, Box<dyn Any + Send>>, panicValue: T) -> T {
+    return result.unwrap_or_else(|e| {
+        let description = e
+            .downcast_ref::<String>()
+            .map(|e| &**e)
+            .or_else(|| e.downcast_ref::<&'static str>().copied())
+            .unwrap_or("Unknown error in native code.");
+        let _ = env.throw_new("java/lang/RuntimeException", description);
+        return panicValue;
+    });
 }
