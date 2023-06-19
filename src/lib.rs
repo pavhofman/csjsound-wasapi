@@ -553,10 +553,10 @@ fn get_rtd_box(ptr: jlong) -> Box<RuntimeData> {
 }
 
 #[cfg(target_pointer_width = "32")]
-pub unsafe fn jlong_to_pointer<T>(ptr: jlong) -> *mut T { (ptr as u32) as *mut T }
+unsafe fn jlong_to_pointer<T>(ptr: jlong) -> *mut T { (ptr as u32) as *mut T }
 
 #[cfg(target_pointer_width = "64")]
-pub unsafe fn jlong_to_pointer<T>(ptr: jlong) -> *mut T {
+unsafe fn jlong_to_pointer<T>(ptr: jlong) -> *mut T {
     ptr as *mut T
 }
 
