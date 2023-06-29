@@ -101,23 +101,23 @@ enum DeviceState {
 
 
 pub fn do_initialize_wasapi() -> Res<()> {
-    match initialize_sta() {
+    return match initialize_sta() {
         Ok(_) => {
-            return Ok(());
+            Ok(())
         }
         Err(err) => {
             match err.code() {
                 // non-fatal results: see https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex#return-value
                 S_FALSE => {
                     debug!("Thread already initialized in STA mode");
-                    return Ok(());
+                    Ok(())
                 }
                 RPC_E_CHANGED_MODE => {
                     warn!("Thread already initialized in a non-STA mode, continuing");
-                    return Ok(());
+                    Ok(())
                 }
                 // fatal errors
-                _ => { return Err(Box::new(err)); }
+                _ => { Err(Box::new(err)) }
             }
         }
     };
@@ -724,7 +724,7 @@ pub fn do_drain(rtd: &RuntimeData) {
             }
         }
         // checking situation every 5 ms
-        thread::sleep(Duration::from_millis(5));
+        sleep(Duration::from_millis(5));
     }
 }
 
@@ -829,8 +829,8 @@ fn get_device_details(device_id: &str, dir: &Direction) -> Res<(Device, String, 
 
 // Playback loop, play samples received from channel
 fn playback_loop(
-    audio_client: wasapi::AudioClient,
-    handle: wasapi::Handle,
+    audio_client: AudioClient,
+    handle: Handle,
     frame_bytes: usize,
     chunk_frames: usize,
     samplerate: usize,
@@ -884,7 +884,7 @@ fn playback_loop(
         trace!("PB INNER: New buffer frame count {}", buffer_free_frames);
 
         if sync.start_signal.load(Ordering::Relaxed) {
-            debug!("PB INNER: Starting inner loop");
+            debug!("PB INNER: Starting inner loop, {}", if running {"stream is already running"} else {"starting stream"});
             if !running {
                 audio_client.start_stream()?;
                 running = true;
@@ -932,20 +932,20 @@ fn playback_loop(
             }
             Err(RecvTimeoutError::Disconnected) => {
                 // while inner was waiting, the outer loop could have been closed
-                if sync.exit_signal.load(Ordering::Relaxed) {
+                return if sync.exit_signal.load(Ordering::Relaxed) {
                     debug!("PB INNER: Exiting inner loop");
                     audio_client.stop_stream()?;
                     sync.exit_signal.store(false, Ordering::Relaxed);
                     //file.flush();
-                    return Ok(());
+                    Ok(())
                 } else {
                     let msg = "PB INNER: data channel is closed although no exit was requested";
                     error!("{}", msg);
                     if running {
                         audio_client.stop_stream()?;
                     }
-                    return Err(DeviceError::new(msg).into());
-                }
+                    Err(DeviceError::new(msg).into())
+                };
             }
         };
         if chunk.is_some() {
@@ -1149,16 +1149,16 @@ fn capture_loop(
                         // If rx_prealloc was for some reason waiting for returned chunks and the device was closed in the mean time,
                         // RecvError would be thrown.
                         // Checking for exit signal to ignore this error condition.
-                        if sync.exit_signal.load(Ordering::Relaxed) {
+                        return if sync.exit_signal.load(Ordering::Relaxed) {
                             debug!("CAPT INNER: Exiting inner loop");
                             audio_client.stop_stream()?;
                             sync.exit_signal.store(false, Ordering::Relaxed);
-                            return Ok(());
+                            Ok(())
                         } else {
                             // real error
                             error!("{}", err.to_string());
-                            return Err(Box::new(err));
-                        }
+                            Err(Box::new(err))
+                        };
                     }
                 }
             }
