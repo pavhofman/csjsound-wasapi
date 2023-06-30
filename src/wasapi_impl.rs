@@ -99,6 +99,66 @@ enum DeviceState {
     Error(String),
 }
 
+struct DeviceTimeTracker {
+    log_prefix: String,
+    prev_dev_time: Option<f64>,
+    accumulated_frame_time: f64,
+}
+
+impl DeviceTimeTracker {
+    pub fn new(log_prefix: String) -> DeviceTimeTracker {
+        DeviceTimeTracker {
+            log_prefix,
+            prev_dev_time: None,
+            accumulated_frame_time: 0.,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.prev_dev_time = None;
+        self.accumulated_frame_time = 0.;
+    }
+
+    pub fn event_missing(&mut self, dev_time: f64, frame_time: f64) -> bool {
+        if dev_time == 0. {
+            // invalid value, because we cannot distinguish between S_OK with real dev_time=0 and S_FALSE
+            // see S_OK vs. S_FALSE in https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getposition#remarks
+            trace!("{}: clock position zero (likely S_FALSE), ignoring", self.log_prefix);
+            if self.prev_dev_time.is_some() {
+                // dev time is running, need to accumulate matching frame time
+                trace!("{}: accumulating frametime for next check", self.log_prefix);
+                self.accumulated_frame_time += frame_time;
+            }
+            // not updating self.prev_dev_time, keeping value from previous check
+            return false;
+        } else {
+            if self.prev_dev_time.is_some() {
+                let prev_dev_time = self.prev_dev_time.unwrap();
+                let elapsed_dev_time = dev_time - prev_dev_time;
+                let elapsed_frame_time = self.accumulated_frame_time + frame_time;
+                trace!("{}: Device time grew by {} s", self.log_prefix, elapsed_dev_time);
+
+                // checking for a missed event
+                // 1 event time corresponds to 1 frame_time,
+                // therefore checking whether elapsed_dev_time is significantly larger than elapsed_frame_time
+                if elapsed_frame_time > 0. && elapsed_dev_time > elapsed_frame_time + 0.5 * frame_time {
+                    warn!("{}: Missed event: device time grew by {}s, expected {}s",
+                    self.log_prefix, elapsed_dev_time, elapsed_frame_time);
+
+                    self.reset();
+                    return true;
+                }
+            }
+            // storing dev_time for next check
+            self.prev_dev_time = Some(dev_time);
+            // since self.prev_dev_time contains current dev_time now (i.e. next check will cover only one event time),
+            // accumulated frame_time from previous events must be cleared
+            self.accumulated_frame_time = 0.;
+            return false;
+        }
+    }
+}
+
 
 pub fn do_initialize_wasapi() -> Res<()> {
     return match initialize_sta() {
@@ -874,7 +934,7 @@ fn playback_loop(
 
     audio_client.stop_stream()?;
     let mut running = false;
-    let mut device_prevtime = None;
+    let mut time_tracker = DeviceTimeTracker::new("PB INNER".into());
     let device_freq = clock.get_frequency()? as f64;
     let render_client = audio_client.get_audiorenderclient()?;
     //let file_res: Result<Box<dyn Write>, std::io::Error> = File::create("inner.raw").map(|f| Box::new(f) as Box<dyn Write>);
@@ -889,6 +949,7 @@ fn playback_loop(
             if !running {
                 audio_client.start_stream()?;
                 running = true;
+                time_tracker.reset();
             }
             sync.start_signal.store(false, Ordering::Relaxed);
             // staying in the loop
@@ -898,6 +959,7 @@ fn playback_loop(
             if running {
                 audio_client.stop_stream()?;
                 running = false;
+                time_tracker.reset();
             }
             sync.stop_signal.store(false, Ordering::Relaxed);
             // staying in the loop
@@ -919,6 +981,7 @@ fn playback_loop(
                     warn!("PB INNER: received chunk in stopped device, starting automatically!");
                     audio_client.start_stream()?;
                     running = true;
+                    time_tracker.reset();
                 }
                 Some(chunk)
             }
@@ -928,6 +991,7 @@ fn playback_loop(
                 if running {
                     audio_client.stop_stream()?;
                     running = false;
+                    time_tracker.reset();
                 }
                 None
             }
@@ -976,29 +1040,16 @@ fn playback_loop(
         }
         let pos = clock.get_position()?.0;
         let device_time = pos as f64 / device_freq;
-        if device_prevtime.is_some() {
-            let prevtime = device_prevtime.unwrap();
-            //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
-            //println!("{}",prev_inst.elapsed().as_micros());
-            trace!(
-                "PB INNER: Device time grew by {} s",
-                device_time - prevtime
-            );
-            if buffer_free_frames > 0 && (device_time - prevtime) > 1.5 * (buffer_free_frames as f64 / samplerate as f64) as f64 {
-                warn!(
-                    "PB INNER: Missing event! Resetting stream. Interval {} s, expected {} s",
-                    device_time - prevtime,
-                    buffer_free_frames as f64 / samplerate as f64
-                );
-                if running {
-                    // restarting the stream
-                    audio_client.stop_stream()?;
-                    audio_client.reset_stream()?;
-                    audio_client.start_stream()?;
-                }
+        if time_tracker.event_missing(device_time, buffer_free_frames as f64 / samplerate as f64) {
+            warn!("PB INNER: Missed event");
+            if running {
+                warn!("PB INNER: resetting stream");
+                audio_client.stop_stream()?;
+                audio_client.reset_stream()?;
+                audio_client.start_stream()?;
+                time_tracker.reset();
             }
         }
-        device_prevtime = Some(device_time);
     }
 }
 
@@ -1024,7 +1075,7 @@ fn capture_loop(
 
     let callbacks_rc = Rc::new(callbacks);
     let callbacks_weak = Rc::downgrade(&callbacks_rc);
-    let mut device_prevtime = None;
+    let mut time_tracker = DeviceTimeTracker::new("CAPT INNER".into());
     let clock = audio_client.get_audioclock()?;
 
     let sessioncontrol = audio_client.get_audiosessioncontrol()?;
@@ -1071,6 +1122,7 @@ fn capture_loop(
             if !running {
                 audio_client.start_stream()?;
                 running = true;
+                time_tracker.reset();
             }
             sync.start_signal.store(false, Ordering::Relaxed);
             // staying in the loop
@@ -1080,6 +1132,7 @@ fn capture_loop(
             if running {
                 audio_client.stop_stream()?;
                 running = false;
+                time_tracker.reset();
             }
             sync.stop_signal.store(false, Ordering::Relaxed);
             // staying in the loop with running=false
@@ -1127,6 +1180,7 @@ fn capture_loop(
             if running {
                 audio_client.stop_stream()?;
                 running = false;
+                time_tracker.reset();
             }
             sync.stop_signal.store(false, Ordering::Relaxed);
             // staying in the loop with running=false
@@ -1225,26 +1279,15 @@ fn capture_loop(
         chunk_nbr += 1;
         let pos = clock.get_position()?.0;
         let device_time = pos as f64 / device_freq;
-        if device_prevtime.is_some() {
-            let prevtime = device_prevtime.unwrap();
-            //println!("pos {} {}, f {}, time {}, diff {}", pos.0, pos.1, f, devtime, devtime-prevtime);
-            //println!("{}",prev_inst.elapsed().as_micros());
-            trace!("CAPT INNER: Device time grew by {} s", device_time - prevtime);
-            if available_frames > 0 && (device_time - prevtime) > 1.5 * (available_frames as f64 / samplerate as f64) as f64 {
-                warn!(
-                    "CAPT INNER: Missing event! Interval {} s, expected {} s",
-                    device_time - prevtime,
-                    available_frames as f64 / samplerate as f64
-                );
-                // if running {
-                //     // warn!("CAPT INNER: Resetting stream");
-                //     // audio_client.stop_stream()?;
-                //     // audio_client.reset_stream()?;
-                //     // audio_client.start_stream()?;
-                //     // running = true;
-                // }
-            }
+        if time_tracker.event_missing(device_time, available_frames as f64 / samplerate as f64) {
+            warn!("CAPT INNER: Missed event");
+            // if running {
+            //     warn!("CAPT INNER: resetting stream");
+            //     audio_client.stop_stream()?;
+            //     audio_client.reset_stream()?;
+            //     audio_client.start_stream()?;
+            //     time_tracker.reset();
+            // }
         }
-        device_prevtime = Some(device_time);
     }
 }
