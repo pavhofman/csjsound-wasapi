@@ -879,6 +879,7 @@ fn playback_loop(
     let render_client = audio_client.get_audiorenderclient()?;
     //let file_res: Result<Box<dyn Write>, std::io::Error> = File::create("inner.raw").map(|f| Box::new(f) as Box<dyn Write>);
     //let mut file = file_res.unwrap();
+    let mut now = Instant::now();
     loop {
         let buffer_free_frames = audio_client.get_available_space_in_frames()?;
         trace!("PB INNER: New buffer frame count {}", buffer_free_frames);
@@ -948,6 +949,8 @@ fn playback_loop(
                 };
             }
         };
+        trace!("PB INNER: loop spent outside of wait_for_event {:?}", now.elapsed());
+        now = Instant::now();
         if chunk.is_some() {
             let chunk = chunk.unwrap();
             //let write_res = file.write_all(chunk.as_slice());
@@ -959,14 +962,15 @@ fn playback_loop(
             )?;
             // for reporting position
             sync.wasapi_bufferfill_bytes.store(chunk_frames * frame_bytes, Ordering::Relaxed);
-            trace!("PB INNER: write ok");
-            let now = Instant::now();
+            trace!("PB INNER: write ok, loop spent writing data to device {:?}", now.elapsed());
+            now = Instant::now();
             if handle.wait_for_event(1000).is_err() {
                 error!("PB INNER: Error on playback, stopping stream");
                 audio_client.stop_stream()?;
                 return Err(DeviceError::new("PB INNER: Error on playback").into());
             }
-            trace!("PB INNER: waited for event: {:?}", now.elapsed());
+            trace!("PB INNER: loop spent in wait_for_event {:?}", now.elapsed());
+            now = Instant::now();
             // buffer empty
             sync.wasapi_bufferfill_bytes.store(0, Ordering::Relaxed);
         }
