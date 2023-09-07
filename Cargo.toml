@@ -19,3 +19,7 @@ windows = { version = "0.39.0", features = ["Win32_System_Threading", "Win32_Fou
 [lib]
 name = "csjsound_amd64"
 crate_type = ["cdylib"]
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
