@@ -7,6 +7,7 @@ use std::any::Any;
 use std::error::Error;
 use std::fs::File;
 use std::panic;
+use std::sync::{Arc, Mutex};
 
 use ::function_name::named;
 use fast_log::appender::{Command, FastLogRecord, RecordFormat};
@@ -46,6 +47,7 @@ pub struct LogFormat {
 
 lazy_static! {
     static ref TIME_FORMAT: Vec<format_description::FormatItem<'static>>= format_description::parse("[hour]:[minute]:[second].[subsecond]").unwrap();
+    static ref BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 }
 
 fn systemtime_strftime<T>(dt: T) -> String
@@ -89,6 +91,7 @@ impl RecordFormat for LogFormat {
 pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nInit
 (env: JNIEnv, _clazz: JClass, logLevelID: jint, logTarget: JString,
  jrates: jintArray, jchannels: jintArray, maxRatesLimit: jint, maxChannelsLimit: jint) -> jboolean {
+    panic::set_hook(Box::new(panic_hook));
     let panicResult = panic::catch_unwind(|| {
         // logging initialization
         let log_target_str = get_string(env, logTarget);
@@ -680,13 +683,24 @@ fn get_thread_name(env: JNIEnv) -> String {
 }
 
 fn check_panic_result<T>(env: JNIEnv, result: Result<T, Box<dyn Any + Send>>, panicValue: T) -> T {
-    return result.unwrap_or_else(|e| {
-        let description = e
-            .downcast_ref::<String>()
-            .map(|e| &**e)
-            .or_else(|| e.downcast_ref::<&'static str>().copied())
-            .unwrap_or("Unknown error in native code.");
-        let _ = env.throw_new("java/lang/RuntimeException", description);
-        return panicValue;
-    });
+    return match result {
+        Ok(v) => v,
+        Err(e) => {
+            let panic_information = match e.downcast::<String>() {
+                Ok(v) => *v,
+                Err(e) => match e.downcast::<&str>() {
+                    Ok(v) => v.to_string(),
+                    _ => "Unknown Source of Error".to_owned()
+                }
+            };
+            let description = format!("{}\nBacktrace:\n{}", panic_information,
+                                      BACKTRACE.lock().unwrap().take().unwrap_or("<Backtrace not found>".to_string()));
+            let _ = env.throw_new("java/lang/RuntimeException", description);
+            panicValue
+        }
+    };
+}
+
+fn panic_hook(_: &panic::PanicInfo) {
+    *BACKTRACE.lock().unwrap() = Some(std::backtrace::Backtrace::force_capture().to_string());
 }
