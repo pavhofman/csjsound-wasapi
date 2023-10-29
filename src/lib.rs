@@ -127,7 +127,7 @@ pub extern "system" fn Java_com_cleansine_sound_provider_SimpleMixerProvider_nIn
 
         info!("Build Timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
         info!("git SHA: {}", env!("VERGEN_GIT_SHA"));
-        info!("git msg: {}", env!("VERGEN_GIT_COMMIT_MESSAGE"));
+        debug!("git msg: {}", env!("VERGEN_GIT_COMMIT_MESSAGE"));
 
         trace!("{}", function_name!());
         info!("Initialized from thread: {}", get_thread_name(env));
